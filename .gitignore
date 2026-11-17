@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.tools/
+src-tauri/target/
+tools/*.exe
+tools/*.dll
+tools/*.zip
+tools/mpv/
+artifacts/
+*.log

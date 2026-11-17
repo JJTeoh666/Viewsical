@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-player-ui-context"
+description = "Enables the player_ui_context command without any pre-configured scope."
+commands.allow = ["player_ui_context"]
+
+[[permission]]
+identifier = "deny-player-ui-context"
+description = "Denies the player_ui_context command without any pre-configured scope."
+commands.deny = ["player_ui_context"]

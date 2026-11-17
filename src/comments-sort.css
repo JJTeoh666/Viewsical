@@ -1,0 +1,14 @@
+.comment-sort-control { position: relative; }
+.comment-sort-trigger { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-hover); color: var(--text); font-size: 12px; font-weight: 500; transition: background 150ms ease, border-color 150ms ease; }
+.comment-sort-trigger:hover:not(:disabled), .comment-sort-trigger[aria-expanded="true"] { background: var(--surface-pressed); }
+.comment-sort-trigger svg:last-child { margin-left: 5px; transition: transform 150ms ease; }
+.comment-sort-trigger .sort-chevron-open { transform: rotate(180deg); }
+.comment-sort-menu { position: absolute; top: calc(100% + 8px); right: 0; width: 246px; max-width: calc(100vw - 40px); z-index: 30; padding: 6px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.comment-sort-menu > button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 58px; padding: 10px 11px; border-radius: 8px; background: transparent; color: inherit; text-align: left; transition: background 120ms ease; }
+.comment-sort-menu > button:hover, .comment-sort-menu > button:focus-visible { background: var(--surface-hover); }
+.comment-sort-menu > button[aria-checked="true"] { background: var(--surface-hover); }
+.comment-sort-menu > button > span:nth-child(2) { display: flex; flex: 1; flex-direction: column; gap: 5px; }
+.comment-sort-menu strong { font-size: 13px; font-weight: 500; }
+.comment-sort-menu small { color: var(--muted); font-size: 11px; font-weight: 400; }
+.comment-sort-check { display: grid; width: 18px; flex-shrink: 0; place-items: center; }
+@media (prefers-reduced-motion: reduce) { .comment-sort-trigger, .comment-sort-trigger svg:last-child, .comment-sort-menu > button { transition: none; } }

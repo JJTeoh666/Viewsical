@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-desktop-commands"
+description = "Allows the trusted local main window to operate TubeDesk. Never assigned to remote sign-in content."
+commands.allow = ["bootstrap", "save_settings", "clear_history", "reveal_download", "open_sign_in", "complete_sign_in", "sign_out", "session_state", "browse", "cancel_browse", "video_comments", "cancel_comments", "cache_summary", "cache_configure", "cache_clear", "set_playback_mode", "player_ui_context", "play_video", "play_local", "player_action", "player_bounds", "player_state", "player_overlay_snapshot", "player_overlay_action", "retry_player_overlay", "enqueue_download", "download_action"]
+
+[[permission]]
+identifier = "allow-player-overlay"
+description = "Allows only the bundled shared player overlay to read presentation state and send scoped playback actions."
+commands.allow = ["player_overlay_snapshot", "player_overlay_action"]

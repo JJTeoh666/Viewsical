@@ -1,0 +1,221 @@
+{
+  "node_count": 996,
+  "unverified_node_count": 0,
+  "raw_edge_count": 2701,
+  "non_object_edges": 0,
+  "missing_endpoint_edges": 0,
+  "dangling_endpoint_edges": 144,
+  "external_reference_edges": 69,
+  "self_loop_edges": 1,
+  "valid_candidate_edges": 2488,
+  "exact_duplicate_edges": 2,
+  "directed_unique_endpoint_pairs": 2387,
+  "directed_same_endpoint_collapsed_edges": 101,
+  "undirected_unique_endpoint_pairs": 2387,
+  "undirected_same_endpoint_collapsed_edges": 101,
+  "same_endpoint_group_count": 70,
+  "relation_variant_groups": 32,
+  "source_file_variant_groups": 0,
+  "source_location_variant_groups": 29,
+  "context_variant_groups": 10,
+  "post_build_graph_type": "Graph",
+  "post_build_node_count": 1059,
+  "post_build_edge_count": 2585,
+  "post_build_error": "",
+  "producer_suppression": {
+    "path": "C:\\Users\\jjteo\\AppData\\Roaming\\uv\\tools\\graphifyy\\Lib\\site-packages\\graphify\\extract.py",
+    "total_sites": 12,
+    "sites": [
+      {
+        "line": 1829,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 2393,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 2395,
+        "name": "seen_doc_refs",
+        "tuple_arity": 0,
+        "sample": "seen_doc_refs: set[str] = set()"
+      },
+      {
+        "line": 3062,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 3209,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n.get(\"id\") for n in nodes}"
+      },
+      {
+        "line": 4350,
+        "name": "seen_keys",
+        "tuple_arity": 0,
+        "sample": "seen_keys: set[tuple] = set()"
+      },
+      {
+        "line": 4536,
+        "name": "seen_keys",
+        "tuple_arity": 0,
+        "sample": "seen_keys: set[tuple] = set()"
+      },
+      {
+        "line": 7947,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 8055,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 8134,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 8659,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 8660,
+        "name": "seen_edges",
+        "tuple_arity": 4,
+        "sample": "seen_edges: set[tuple[str, str, str, str | None]] = set()"
+      }
+    ],
+    "error": ""
+  },
+  "examples": [
+    {
+      "source": "src_tauri_src_player_playermanager",
+      "target": "src_tauri_src_player_rs_mutex",
+      "edge_count": 16,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src-tauri/src/player.rs"
+      ],
+      "source_locations": [
+        "L167",
+        "L168",
+        "L171",
+        "L174",
+        "L175",
+        "L180",
+        "L181",
+        "L182",
+        "L183",
+        "L190",
+        "L191",
+        "L192",
+        "L193",
+        "L194",
+        "L195",
+        "L196"
+      ],
+      "contexts": [
+        "field"
+      ]
+    },
+    {
+      "source": "src_tauri_src_player_playermanager",
+      "target": "asyncmutex",
+      "edge_count": 5,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src-tauri/src/player.rs"
+      ],
+      "source_locations": [
+        "L169",
+        "L170",
+        "L172",
+        "L173"
+      ],
+      "contexts": [
+        "field",
+        "generic_arg"
+      ]
+    },
+    {
+      "source": "src_tauri_src_player_playermanager",
+      "target": "src_tauri_src_player_rs_atomicu64",
+      "edge_count": 5,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src-tauri/src/player.rs"
+      ],
+      "source_locations": [
+        "L176",
+        "L177",
+        "L178",
+        "L179",
+        "L184"
+      ],
+      "contexts": [
+        "field"
+      ]
+    },
+    {
+      "source": "src_tauri_src_player_playermanager",
+      "target": "src_tauri_src_player_rs_atomicbool",
+      "edge_count": 5,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src-tauri/src/player.rs"
+      ],
+      "source_locations": [
+        "L185",
+        "L186",
+        "L187",
+        "L188",
+        "L189"
+      ],
+      "contexts": [
+        "field"
+      ]
+    },
+    {
+      "source": "src_tauri_src_player_playermanager",
+      "target": "src_tauri_src_player_sourcetoken",
+      "edge_count": 4,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src-tauri/src/player.rs"
+      ],
+      "source_locations": [
+        "L193",
+        "L194",
+        "L195",
+        "L196"
+      ],
+      "contexts": [
+        "generic_arg"
+      ]
+    }
+  ]
+}

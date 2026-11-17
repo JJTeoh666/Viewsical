@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-browse"
+description = "Enables the cancel_browse command without any pre-configured scope."
+commands.allow = ["cancel_browse"]
+
+[[permission]]
+identifier = "deny-cancel-browse"
+description = "Denies the cancel_browse command without any pre-configured scope."
+commands.deny = ["cancel_browse"]

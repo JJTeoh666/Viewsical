@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "player-overlay",
+  "description": "Only the local shared player controls; no account, filesystem or window management commands.",
+  "windows": [
+    "player-overlay"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-player-overlay"
+  ]
+}

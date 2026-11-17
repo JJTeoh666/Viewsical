@@ -1,0 +1,54 @@
+{
+  "generated_at": "2026-11-17T13:36:25.338453+00:00",
+  "nodes": {
+    "resources_player_tubedesk_osc": {
+      "code_fingerprint": "3f9c7dc7599a0519ba781dd84943dc177437defdb565d26b657fbfa0a131d317",
+      "label": "tubedesk_osc.lua",
+      "last": "2026-11-17T13:02:12.579796+00:00",
+      "provenance": [
+        {
+          "date": "2026-11-17T13:02:12.579796+00:00",
+          "outcome": "useful",
+          "q": "Where are native playback and settings coordinated in Viewsical?"
+        }
+      ],
+      "score": 0.999451206,
+      "source_file": "resources/player/tubedesk_osc.lua",
+      "status": "tentative",
+      "uses": 1
+    },
+    "src_tauri_src_player_playermanager": {
+      "code_fingerprint": "65c502f40b1829e64042ef9d450bf482c594af8f253580b2e53f2788702c85b0",
+      "label": "PlayerManager",
+      "last": "2026-11-17T13:02:12.579796+00:00",
+      "provenance": [
+        {
+          "date": "2026-11-17T13:02:12.579796+00:00",
+          "outcome": "useful",
+          "q": "Where are native playback and settings coordinated in Viewsical?"
+        }
+      ],
+      "score": 0.999451206,
+      "source_file": "src-tauri/src/player.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "src_tauri_src_youtube_playbackplan": {
+      "code_fingerprint": "54f2fbea47ce8de0e3d9176fbd3172cbd3e6db5a95cf7e2201f80c47f6a31b9a",
+      "label": "PlaybackPlan",
+      "last": "2026-11-17T13:02:12.579796+00:00",
+      "provenance": [
+        {
+          "date": "2026-11-17T13:02:12.579796+00:00",
+          "outcome": "useful",
+          "q": "Where are native playback and settings coordinated in Viewsical?"
+        }
+      ],
+      "score": 0.999451206,
+      "source_file": "src-tauri/src/youtube.rs",
+      "status": "tentative",
+      "uses": 1
+    }
+  },
+  "version": 1
+}

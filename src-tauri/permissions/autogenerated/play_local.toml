@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-play-local"
+description = "Enables the play_local command without any pre-configured scope."
+commands.allow = ["play_local"]
+
+[[permission]]
+identifier = "deny-play-local"
+description = "Denies the play_local command without any pre-configured scope."
+commands.deny = ["play_local"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-player-bounds"
+description = "Enables the player_bounds command without any pre-configured scope."
+commands.allow = ["player_bounds"]
+
+[[permission]]
+identifier = "deny-player-bounds"
+description = "Denies the player_bounds command without any pre-configured scope."
+commands.deny = ["player_bounds"]

@@ -1,0 +1,50 @@
+[
+  {
+    "archiveSha256": "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d",
+    "sha256": "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d",
+    "source": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp.exe",
+    "version": "2026.10.26",
+    "name": "yt-dlp",
+    "file": "yt-dlp.exe"
+  },
+  {
+    "archiveSha256": "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf",
+    "sha256": "924397800533d3eb0ed0c889b20ad70e18b970d93acd8135bc043f425e528266",
+    "source": "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip",
+    "version": "2.9.8",
+    "name": "Deno",
+    "file": "deno.exe"
+  },
+  {
+    "archiveSha256": "f259b5fd4b5c395617c948a4fadcdf55bba1c5282fb7c13e88626b3f71072baf",
+    "sha256": "3ea89fe7a4284b25dff3c72e1bde83e27324c90cfc4a074fe679293d19ee7c85",
+    "source": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-x86_64-20261111-git-bcde6b93cc.7z",
+    "version": "20261111-git-bcde6b93cc",
+    "name": "mpv",
+    "file": "mpv.exe"
+  },
+  {
+    "archiveSha256": "e25b682664025d49034c981afb4bae36238a40f29a3cc1c713ad9a8b5b3528f6",
+    "sha256": "1326dde4c84ff1f96fe6b8916c5bed29e163e9b5dccf995f6f3db069d143ec5e",
+    "source": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.7z",
+    "version": "8.1.2-essentials",
+    "name": "FFmpeg",
+    "file": "ffmpeg.exe"
+  },
+  {
+    "archiveSha256": "e25b682664025d49034c981afb4bae36238a40f29a3cc1c713ad9a8b5b3528f6",
+    "sha256": "b49ccc7c6547b141ad5a2f6ec69cc04323d7133d7704d70b331b904c63eecb07",
+    "source": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.7z",
+    "version": "8.1.2-essentials",
+    "name": "FFprobe",
+    "file": "ffprobe.exe"
+  },
+  {
+    "archiveSha256": "f259b5fd4b5c395617c948a4fadcdf55bba1c5282fb7c13e88626b3f71072baf",
+    "sha256": "4b074a3976399dc735484f5d43d04b519b7bdee8ac719d9ab8ed6bd4e6be0345",
+    "source": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-x86_64-20261111-git-bcde6b93cc.7z",
+    "version": "20261111-git-bcde6b93cc",
+    "name": "mpv Direct3D compiler helper",
+    "file": "d3dcompiler_43.dll"
+  }
+]

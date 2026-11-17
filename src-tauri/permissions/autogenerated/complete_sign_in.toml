@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-complete-sign-in"
+description = "Enables the complete_sign_in command without any pre-configured scope."
+commands.allow = ["complete_sign_in"]
+
+[[permission]]
+identifier = "deny-complete-sign-in"
+description = "Denies the complete_sign_in command without any pre-configured scope."
+commands.deny = ["complete_sign_in"]

@@ -1,0 +1,43 @@
+/* One integrated desktop toolbar: no second Windows title strip. */
+.topbar { gap: 18px; padding: 0 0 0 16px; user-select: none; }
+.topbar-brand { flex: 1 1 215px; gap: 6px; min-width: 160px; }
+.topbar-brand .brand-word { font-size: 18px; }
+.topbar-brand .brand-mark { width: 30px; height: 30px; }
+.topbar-brand .logo-button { margin-right: 10px; }
+.header-center { display: flex; flex: 0 1 650px; align-items: center; min-width: 230px; gap: 10px; }
+.header-home { background: var(--surface-hover); width: 46px; height: 46px; }
+.header-center .search-form { flex: 1; width: auto; min-width: 0; margin: 0; height: 46px; border-radius: 999px; background: var(--surface-hover); border: 1px solid transparent; overflow: hidden; }
+.header-center .search-form:focus-within { border-color: var(--input-line); box-shadow: 0 0 0 1px var(--input-line); }
+.header-center .search-input-wrap { background: transparent; border: 0; box-shadow: none; padding-left: 16px; border-radius: 0; }
+.header-center .search-leading, .header-center .search-input-wrap:focus-within .search-leading { display: block; color: var(--muted); flex-shrink: 0; position: static; margin-right: 10px; }
+.header-center .search-input-wrap input { background: transparent; padding: 0; }
+.header-center .search-submit { background: transparent; border: 0; border-left: 1px solid var(--line); border-radius: 0; width: 50px; margin: 8px 0; height: 28px; }
+.header-center .search-submit:hover { background: var(--surface-pressed); }
+.header-actions { flex: 1 0 auto; gap: 10px; padding-left: 12px; }
+.header-drag-gap { align-self: stretch; flex: 1; min-width: 14px; }
+.account-avatar.connected-avatar { background: var(--surface-hover); color: var(--text); border: 1px solid var(--line); width: 38px; height: 38px; display: grid; place-items: center; }
+.account-avatar.connected-avatar:hover { background: var(--surface-pressed); }
+.window-controls { display: flex; align-self: stretch; margin-left: 10px; }
+.window-controls button { width: 46px; min-height: 44px; padding: 0; display: grid; place-items: center; background: transparent; border-radius: 0; color: var(--muted); }
+.window-controls button:hover { background: var(--surface-hover); color: var(--text); }
+.window-controls .window-close:hover { background: #c42b1c; color: white; }
+.window-controls button:focus-visible { outline-offset: -5px; }
+.setting-switch { position: relative; width: 44px; min-width: 44px; height: 26px; padding: 3px; border-radius: 30px; background: var(--surface-pressed); border: 1px solid var(--input-line); }
+.setting-switch span { display: block; width: 18px; height: 18px; border-radius: 50%; background: var(--text); transition: transform 160ms ease; }
+.setting-switch[aria-checked='true'] { background: var(--red); border-color: var(--red); }
+.setting-switch[aria-checked='true'] span { background: white; transform: translateX(18px); }
+.brand-artwork { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; }
+@media (max-width: 1150px) {
+  .topbar { gap: 8px; padding-right: 0; }
+  .topbar-brand { flex: 0 0 auto; min-width: 100px; gap: 2px; }
+  .topbar-brand .brand-word { display: none; }
+  .topbar-brand .logo-button { margin-right: 2px; }
+  .header-center { flex: 1; }
+  .header-actions { flex: 0 0 auto; padding-left: 0; gap: 8px; }
+  .header-drag-gap { min-width: 8px; flex: 0 0 8px; }
+  .window-controls { margin-left: 2px; }
+  .window-controls button { width: 40px; }
+}
+@media (prefers-reduced-motion: reduce) { .setting-switch span { transition: none; } }
+
+.brand-mark:has(.brand-artwork) { background: transparent; }
