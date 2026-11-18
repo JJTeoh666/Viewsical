@@ -1,0 +1,18 @@
+{
+  "version": "0.1.7",
+  "update": "GitHub release documentation",
+  "updated_at": "2026-11-18T07:03:24.120056+00:00",
+  "changed_files": 2,
+  "deleted_files": 0,
+  "nodes": 1389,
+  "edges": 3289,
+  "communities": 75,
+  "diff": "12 new nodes, 31 new edges",
+  "preserved_readme_concepts": 18,
+  "missing_endpoints": 0,
+  "dangling_endpoints": 0,
+  "rust_tests_passed": 61,
+  "frontend_tests_passed": 26,
+  "live_checks_passed": 10,
+  "host_token_usage_available": false
+}

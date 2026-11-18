@@ -72,7 +72,10 @@ impl OverlayAction {
         }
     }
     fn switches_source(self) -> bool {
-        matches!(self, Self::Quality | Self::Mode)
+        matches!(
+            self,
+            Self::Quality | Self::Mode | Self::Seek | Self::Toggle | Self::Resume
+        )
     }
     fn is_ui_request(self) -> bool {
         matches!(
@@ -301,6 +304,7 @@ impl PlayerManager {
                 height: 360.,
                 visible: false,
                 radius: None,
+                viewport_top: 0.,
             }),
             serial: AtomicU64::new(1),
             load: AtomicU64::new(0),
@@ -362,7 +366,7 @@ impl PlayerManager {
             && state.playback_mode == "video"
             && matches!(
                 state.status.as_str(),
-                "preparing" | "buffering" | "playing" | "paused"
+                "preparing" | "buffering" | "playing" | "paused" | "ended"
             )
             && !self.closing.load(Ordering::SeqCst)
     }
@@ -914,7 +918,7 @@ impl PlayerManager {
             self.change(app, |s| s.playback_mode = mode);
             return Ok(());
         };
-        self.switch_source(app, item, state.requested_quality, Some(mode))
+        self.switch_source(app, item, state.requested_quality, Some(mode), None)
             .await
     }
     async fn switch_source(
@@ -923,8 +927,13 @@ impl PlayerManager {
         item: MediaItem,
         quality: u32,
         mode: Option<String>,
+        start: Option<f64>,
     ) -> AppResult<()> {
         let state = self.snapshot();
+        let position = start.unwrap_or(state.position);
+        if state.status == "ended" && start.is_some() {
+            self.desired_pause.store(false, Ordering::SeqCst);
+        }
         let force_refresh = mode.is_none();
         let mode = mode.unwrap_or_else(|| state.playback_mode.clone());
         let local = self
@@ -968,7 +977,7 @@ impl PlayerManager {
             prefer_hls: false,
         };
         let result = if let Some(source) = local {
-            self.open_local_source(app, source, item, Some(state.position), options)
+            self.open_local_source(app, source, item, Some(position), options)
                 .await
         } else {
             if let Ok(mut context) = self.recovery.lock() {
@@ -981,7 +990,7 @@ impl PlayerManager {
                     prefer_hls: false,
                 });
             }
-            self.open_remote(app, &item, quality, Some(state.position), options)
+            self.open_remote(app, &item, quality, Some(position), options)
                 .await
         };
         if let Err(ref error) = result {
@@ -1722,7 +1731,7 @@ impl PlayerManager {
         action: &str,
         value: Option<f64>,
     ) -> AppResult<()> {
-        let _control = if action == "quality" {
+        let _control = if matches!(action, "quality" | "seek" | "toggle" | "resume") {
             None
         } else {
             Some(self.control_updates.lock().await)
@@ -1742,6 +1751,34 @@ impl PlayerManager {
     ) -> AppResult<()> {
         let state = self.snapshot();
         let value = value.filter(|v| v.is_finite());
+        // mpv unloads its source at natural EOF. Seeking or replaying the final
+        // queue item must reopen that item, rather than seeking an idle engine.
+        // This bypasses queue selection changes and retains the chosen mode.
+        if state.status == "ended" && matches!(action, "seek" | "toggle" | "resume") {
+            let position = if action == "seek" {
+                value
+                    .ok_or_else(|| AppError::new("invalid_value", "A seek position is required."))?
+                    .clamp(0., state.duration.max(0.))
+            } else {
+                0.
+            };
+            if position >= state.duration && state.duration > 0. {
+                return Ok(());
+            }
+            let item = state
+                .video
+                .clone()
+                .ok_or_else(|| AppError::new("player_idle", "Open a video first."))?;
+            return self
+                .switch_source(
+                    app,
+                    item,
+                    state.requested_quality,
+                    Some(state.playback_mode),
+                    Some(position),
+                )
+                .await;
+        }
         match action {
             "pause" | "resume" | "toggle" => {
                 let paused = match action {
@@ -1761,6 +1798,12 @@ impl PlayerManager {
                 self.set_play_status(app);
             }
             "seek" => {
+                let _source = self.switching.lock().await;
+                ensure_control_load(
+                    state.load_id,
+                    self.load.load(Ordering::SeqCst),
+                    self.closing.load(Ordering::SeqCst),
+                )?;
                 let pos = value
                     .ok_or_else(|| AppError::new("invalid_value", "A seek position is required."))?
                     .clamp(0., state.duration.max(0.));
@@ -1809,7 +1852,7 @@ impl PlayerManager {
                     let item = state
                         .video
                         .ok_or_else(|| AppError::new("player_idle", "Open a video first."))?;
-                    self.switch_source(app, item, quality, None).await?;
+                    self.switch_source(app, item, quality, None, None).await?;
                 }
             }
             "stop" => {
@@ -1922,6 +1965,8 @@ impl PlayerManager {
             || bounds.width < 0.
             || bounds.height < 0.
             || bounds.radius.is_some_and(|r| !r.is_finite() || r < 0.)
+            || !bounds.viewport_top.is_finite()
+            || bounds.viewport_top < 0.
         {
             return Err(AppError::new(
                 "invalid_bounds",
@@ -1943,7 +1988,8 @@ impl PlayerManager {
                 #[cfg(windows)]
                 unsafe {
                     use windows::Win32::{
-                        Foundation::HWND, Graphics::Gdi::*, UI::WindowsAndMessaging::*,
+                        Foundation::{HWND, RECT},
+                        UI::WindowsAndMessaging::*,
                     };
                     // Input belongs to the shared web overlay. Keep the mpv
                     // child disabled so it cannot steal focus or dispatch a
@@ -1966,15 +2012,26 @@ impl PlayerManager {
                         .unwrap_or(0.)
                         .clamp(0., bounds.width.min(bounds.height) / 2.)
                         .round() as i32;
-                    let region =
-                        CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
-                    if !region.is_invalid()
-                        && SetWindowRgn(HWND(handle as *mut _), Some(region), true) == 0
-                    {
-                        let _ = DeleteObject(HGDIOBJ(region.0));
+                    let mut client = RECT::default();
+                    let clip = GetParent(HWND(handle as *mut _))
+                        .ok()
+                        .filter(|parent| GetClientRect(*parent, &mut client).is_ok())
+                        .and_then(|_| {
+                            crate::player_geometry::visible_clip(
+                                &bounds,
+                                (client.right, client.bottom),
+                            )
+                        });
+                    if let Some(clip) = clip {
+                        crate::player_geometry::apply_region(
+                            HWND(handle as *mut _),
+                            width,
+                            height,
+                            radius,
+                            clip,
+                        );
                     }
-                    let visible =
-                        bounds.visible && video_mode && bounds.width > 1. && bounds.height > 1.;
+                    let visible = clip.is_some() && video_mode;
                     let _ = SetWindowPos(
                         HWND(handle as *mut _),
                         Some(HWND_TOP),
@@ -2367,8 +2424,6 @@ pub fn player_state(state: State<'_, AppState>) -> PlayerState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(windows)]
-    use std::path::PathBuf;
     #[test]
     fn volume_shortcuts_use_exact_five_point_steps_and_boundaries() {
         assert_eq!(stepped_volume(37., Some(5.)).unwrap(), 42.);
@@ -2579,151 +2634,6 @@ mod tests {
         assert_eq!(
             merge_failure(MediaFailure::Rejected, MediaFailure::AudioMissing),
             MediaFailure::Rejected
-        );
-    }
-    #[test]
-    #[cfg(windows)]
-    fn native_pointer_requires_a_matching_press_and_never_reuses_a_previous_load() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let player = root.join("tools/mpv.exe");
-        if !player.is_file() {
-            return;
-        }
-        let scratch_root = root.join(".tools/test-data");
-        std::fs::create_dir_all(&scratch_root).unwrap();
-        let scratch = scratch_root.join(format!("osc-unit-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&scratch).unwrap();
-        let source = serde_json::to_string(
-            &root
-                .join("resources/player/tubedesk_osc.lua")
-                .to_string_lossy(),
-        )
-        .unwrap();
-        let lua=r#"
-local real=require("mp")
-local utils=require("mp.utils")
-local handlers,observers,messages,timers={},{},{},{}
-local requests={}
-local render
-local now=0
-local overlay={update=function()end}
-local fake={}
-fake.create_osd_overlay=function() return overlay end
-fake.get_time=function() return now end
-fake.get_property_native=function() return {w=1000,h=560} end
-fake.commandv=function(command,name,load,action,value)
- if command=="script-message"and name=="tubedesk-control"then requests[#requests+1]={load=load,action=action,value=value}end
-end
-fake.add_forced_key_binding=function(key,_,fn)handlers[key]=fn end
-fake.observe_property=function(name,_,fn)observers[name]=fn end
-fake.register_script_message=function(name,fn)messages[name]=fn end
-fake.register_event=function()end
-fake.add_periodic_timer=function(_,fn)render=fn;return{}end
-fake.add_timeout=function(_,fn)local timer={fn=fn};timer.kill=function()timer.dead=true end;timers[#timers+1]=timer;return timer end
-local function tests()
- package.loaded["mp"]=fake
- package.loaded["mp.utils"]=utils
- dofile($SOURCE)
- local function context(id)messages.context('{"loadId":'..id..',"mode":"video","quality":1080,"qualities":[1080,720],"hasPrevious":false,"hasNext":true}');render()end
- local function mouse(x,y,hover)observers["mouse-pos"]("",{x=x,y=y,hover=hover~=false});render()end
- local function pointer(kind,canceled)handlers.MBTN_LEFT({event=kind,canceled=canceled})end
- context(1);mouse(500,200)
- local hit_test
- for index=1,30 do local name,value=debug.getupvalue(handlers.MBTN_LEFT,index);if name=="find_hit"then hit_test=value;break end end
- assert(hit_test,"native pointer hit tester missing")
- local hx,hy
- for y=450,559,5 do for x=0,999,10 do local hit=hit_test(x,y);if hit and hit.action=="mode"then hx,hy=hit.x+hit.w/2,hit.y+hit.h/2;break end end;if hx then break end end
- assert(hx,"native Audio only button was not rendered")
- mouse(hx,hy)
- pointer("up");pointer("press")
- assert(#requests==0,"orphan up/press activated Audio only")
- pointer("down");pointer("up")
- assert(#requests==1 and requests[1].action=="mode"and requests[1].value=="audio","a complete pointer click did not activate the actual native control")
- requests={}
- mouse(500,200);pointer("down");mouse(hx,hy);pointer("up")
- assert(#requests==0,"a release on another control activated it")
- mouse(hx,hy);pointer("down");context(2);pointer("up")
- assert(#requests==0,"a previous-load press activated the current source")
- pointer("down");pointer("up",true);pointer("up")
- assert(#requests==0,"canceled press remained armed")
- mouse(hx,hy);pointer("down");mouse(hx,hy,false);mouse(hx,hy,true);pointer("up")
- assert(#requests==0,"leaving the native surface retained an armed press")
- observers.pause("",true);render()
- assert(#overlay.data>0,"paused controls missing while cursor is over video")
- mouse(hx,hy,false)
- assert(overlay.data==""and not hit_test(hx,hy),"paused controls or progress remained after pointer leave")
- mouse(hx,hy,true)
- assert(#overlay.data>0,"controls did not return when cursor re-entered at the same coordinates")
- local sx,sy
- for y=450,559,5 do for x=0,999,10 do local hit=hit_test(x,y);if hit and hit.action=="menu"and hit.value=="settings"then sx,sy=hit.x+hit.w/2,hit.y+hit.h/2;break end end;if sx then break end end
- assert(sx,"native settings trigger was not rendered")
- mouse(sx,sy);pointer("down");pointer("up");render()
- assert(overlay.data:find("Playback mode",1,true),"native settings menu did not open")
- assert(overlay.data:find("\\1a&H3A&",1,true),"settings panel lost its translucent glass fill")
- mouse(sx,sy,false)
- assert(overlay.data=="","open settings menu stayed visible outside the video")
- mouse(sx,sy,true)
- assert(not overlay.data:find("Playback mode",1,true),"dismissed settings menu reopened on re-entry")
- observers["paused-for-cache"]("",true);mouse(sx,sy,false)
- assert(not hit_test(hx,hy),"buffering kept controls active after pointer leave")
- observers["paused-for-cache"]("",false);observers.pause("",false)
- observers["mouse-pos"]("",nil);render()
- assert(overlay.data=="","missing native pointer state retained controls")
- mouse(1001,200,true)
- assert(overlay.data=="","out-of-bounds pointer coordinates kept controls visible")
- mouse(hx,hy,true);now=3;render()
- assert(overlay.data=="","idle hover controls did not auto-hide")
- mouse(hx-1,hy,true)
- assert(#overlay.data>0,"pointer movement did not restore hidden controls")
- context(3);mouse(500,200);pointer("down");pointer("up")
- handlers.MBTN_LEFT_DBL()
- for _,timer in ipairs(timers)do if not timer.dead then timer.fn()end end
- assert(#requests==1 and requests[1].action=="fullscreen","double click also paused or activated a setting")
- requests={};mouse(500,200,false);handlers["Ctrl+k"]()
- assert(#requests==1 and requests[1].action=="focus-controls","hidden native overlay blocked keyboard-accessible controls")
-end
-local success,error=xpcall(tests,debug.traceback)
-package.loaded["mp"]=real
-if not success then real.msg.error(error)end
-real.commandv("quit",success and 0 or 1)
-"#.replace("$SOURCE",&source);
-        let driver = scratch.join("fixture.lua");
-        std::fs::write(&driver, lua).unwrap();
-        let mut command = std::process::Command::new(player);
-        command
-            .args([
-                "--idle=yes",
-                "--vo=null",
-                "--ao=null",
-                "--force-window=no",
-                "--no-config",
-                "--load-scripts=no",
-                "--terminal=yes",
-                "--msg-level=all=warn",
-            ])
-            .arg(format!("--script={}", driver.display()));
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-        let result = command.output().unwrap();
-        let target = scratch.canonicalize().unwrap();
-        let allowed = scratch_root.canonicalize().unwrap();
-        assert!(
-            target.parent() == Some(allowed.as_path())
-                && target
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with("osc-unit-")
-        );
-        std::fs::remove_dir_all(target).unwrap();
-        assert!(
-            result.status.success(),
-            "{}",
-            format!(
-                "{}{}",
-                String::from_utf8_lossy(&result.stdout),
-                String::from_utf8_lossy(&result.stderr)
-            )
         );
     }
 }

@@ -7,6 +7,30 @@
       "files": 76,
       "usage_available": false,
       "note": "AST uses no model. Host semantic agent API does not expose token usage; zero counters are placeholders."
+    },
+    {
+      "date": "2026-11-18T06:31:27.569669+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 50,
+      "usage_available": false,
+      "note": "AST uses no model. Host semantic-agent API does not expose usage; zero counters are placeholders."
+    },
+    {
+      "date": "2026-11-18T06:51:35.677627+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 9,
+      "usage_available": true,
+      "note": "Code-only adapter refactor; deterministic AST extraction, no model/API calls."
+    },
+    {
+      "date": "2026-11-18T07:03:24.119782+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 2,
+      "usage_available": false,
+      "note": "Full host-agent semantic extraction of README and CHANGELOG; token usage is not exposed."
     }
   ],
   "total_input_tokens": 0,

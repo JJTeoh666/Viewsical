@@ -175,6 +175,8 @@ pub struct PlayerBounds {
     pub visible: bool,
     #[serde(default)]
     pub radius: Option<f64>,
+    #[serde(default)]
+    pub viewport_top: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

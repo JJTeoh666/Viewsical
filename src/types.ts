@@ -88,7 +88,7 @@ export interface Bootstrap {
   history: HistoryItem[];
   tools: ToolStatus[];
 }
-export interface PlayerBounds { x: number; y: number; width: number; height: number; visible: boolean; radius?: number }
+export interface PlayerBounds { x: number; y: number; width: number; height: number; visible: boolean; radius?: number; viewportTop?: number }
 export interface PlayerUiContext { hasPrevious: boolean; hasNext: boolean; mini: boolean; theater: boolean; fullscreen: boolean }
 export interface PlayerPresentation { revision: number; player: PlayerState; ui: PlayerUiContext; pausedIntent: boolean; overlayError: string | null }
 export type PlayerOverlayAction = PlayerAction | 'mode' | 'next' | 'previous' | 'fullscreen' | 'theater' | 'focus-controls' | 'scroll';

@@ -1,4 +1,4 @@
-param([switch]$SkipChecks)
+param([switch]$SkipChecks, [switch]$PackageOnly)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'env.ps1')
 Set-Location $projectRoot
@@ -14,9 +14,15 @@ if (!$SkipChecks) {
     & (Join-Path $PSScriptRoot 'test-rust.ps1')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
-& npm run tauri -- build
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if (!$PackageOnly) {
+    & npm run tauri -- build
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 $version = (Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json).version
+if ($PackageOnly) {
+    $binary = Get-Item -LiteralPath 'src-tauri\target\release\Viewsical.exe'
+    if ($binary.VersionInfo.ProductVersion -ne $version -or !(Test-Path -LiteralPath "src-tauri\target\release\bundle\nsis\Viewsical_${version}_x64-setup.exe")) { throw 'Build the matching native binary and installer before packaging.' }
+}
 $output = Join-Path $projectRoot 'artifacts'
 $portable = Join-Path $output 'Viewsical-portable'
 New-Item -ItemType Directory -Path $portable -Force | Out-Null
@@ -24,7 +30,15 @@ Copy-Item -LiteralPath 'src-tauri\target\release\Viewsical.exe' -Destination (Jo
 Copy-Item -LiteralPath 'tools' -Destination $portable -Recurse -Force
 Copy-Item -LiteralPath 'THIRD_PARTY_NOTICES.md','README.md' -Destination $portable -Force
 Copy-Item -LiteralPath 'docs' -Destination $portable -Recurse -Force
-if (Test-Path -LiteralPath 'resources\player') { Copy-Item -LiteralPath 'resources\player' -Destination $portable -Recurse -Force }
+# The web overlay replaces the obsolete Lua resources in older portable builds.
+$obsoletePlayer = Join-Path $portable 'player'
+if (Test-Path -LiteralPath $obsoletePlayer) {
+    $portableAbsolute = [System.IO.Path]::GetFullPath($portable)
+    $obsoleteAbsolute = [System.IO.Path]::GetFullPath($obsoletePlayer)
+    $obsoleteItem = Get-Item -LiteralPath $obsoleteAbsolute -Force
+    if ([System.IO.Path]::GetDirectoryName($obsoleteAbsolute) -ne $portableAbsolute -or ($obsoleteItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { throw 'Unexpected portable player resource path.' }
+    Remove-Item -LiteralPath $obsoleteAbsolute -Recurse -Force
+}
 Copy-Item -LiteralPath 'resources\ytdlp-plugins' -Destination $portable -Recurse -Force
 Compress-Archive -Path (Join-Path $portable '*') -DestinationPath (Join-Path $output "Viewsical-$version-windows-x64-portable.zip") -Force
 Get-ChildItem -LiteralPath 'src-tauri\target\release\bundle\nsis' -Filter '*.exe' | Copy-Item -Destination $output -Force

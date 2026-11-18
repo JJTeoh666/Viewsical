@@ -1,5 +1,6 @@
 //! One application-owned WebView presents the shared React controls above mpv.
 //! Geometry is physical, owner-relative and never follows playback-frame IPC.
+use crate::player_geometry::{visible_clip, ClipRect};
 use crate::{models::*, AppState};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -22,6 +23,7 @@ struct Geometry {
     width: i32,
     height: i32,
     radius: i32,
+    clip: ClipRect,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Failure {
@@ -106,6 +108,7 @@ pub fn sync(app: &AppHandle, bounds: PlayerBounds, video_visible: bool) {
                 || old.height != bounds.height
                 || old.visible != bounds.visible
                 || old.radius != bounds.radius
+                || old.viewport_top != bounds.viewport_top
         });
         inner.desired = Some(Desired {
             bounds,
@@ -354,21 +357,7 @@ fn desired_geometry(
     origin: (i32, i32),
     client: (i32, i32),
 ) -> Option<Geometry> {
-    if !bounds.visible
-        || ![bounds.x, bounds.y, bounds.width, bounds.height]
-            .iter()
-            .all(|v| v.is_finite())
-        || bounds.width <= 1.
-        || bounds.height <= 1.
-        || bounds.width > 16384.
-        || bounds.height > 16384.
-        || bounds.x < 0.
-        || bounds.y < 0.
-        || bounds.x + bounds.width > client.0 as f64 + 1.
-        || bounds.y + bounds.height > client.1 as f64 + 1.
-    {
-        return None;
-    }
+    let clip = visible_clip(bounds, client)?;
     Some(Geometry {
         x: origin.0.saturating_add(bounds.x.round() as i32),
         y: origin.1.saturating_add(bounds.y.round() as i32),
@@ -379,6 +368,7 @@ fn desired_geometry(
             .unwrap_or(0.)
             .clamp(0., bounds.width.min(bounds.height) / 2.)
             .round() as i32,
+        clip,
     })
 }
 
@@ -386,7 +376,7 @@ fn desired_geometry(
 fn apply(app: &AppHandle) {
     use windows::Win32::{
         Foundation::{HWND, POINT, RECT},
-        Graphics::Gdi::*,
+        Graphics::Gdi::ClientToScreen,
         UI::WindowsAndMessaging::*,
     };
     let manager = app.state::<OverlayManager>();
@@ -440,19 +430,16 @@ fn apply(app: &AppHandle) {
                 old.width != geometry.width
                     || old.height != geometry.height
                     || old.radius != geometry.radius
+                    || old.clip != geometry.clip
             });
             if resized {
-                let region = CreateRoundRectRgn(
-                    0,
-                    0,
-                    geometry.width + 1,
-                    geometry.height + 1,
-                    geometry.radius * 2,
-                    geometry.radius * 2,
+                crate::player_geometry::apply_region(
+                    hwnd,
+                    geometry.width,
+                    geometry.height,
+                    geometry.radius,
+                    geometry.clip,
                 );
-                if !region.is_invalid() && SetWindowRgn(hwnd, Some(region), true) == 0 {
-                    let _ = DeleteObject(HGDIOBJ(region.0));
-                }
             }
             // Size the hidden WebView immediately so initialization has a real
             // viewport. It must not expose an empty document while loading.
@@ -529,7 +516,28 @@ pub async fn retry(app: &AppHandle) -> AppResult<()> {
     }
     if let Some(window) = app.get_webview_window(LABEL) {
         manager.expected_destroy.fetch_add(1, Ordering::SeqCst);
-        window.destroy().map_err(AppError::io)?;
+        if let Err(error) = window.destroy() {
+            manager.expected_destroy.fetch_sub(1, Ordering::SeqCst);
+            return Err(AppError::io(error));
+        }
+        // destroy() queues native destruction. Reusing the label before Tauri
+        // removes the old window makes sync see an existing window and skip
+        // recreation forever. Wait without holding presentation/geometry locks.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while app.get_webview_window(LABEL).is_some() {
+            if manager.closing.load(Ordering::SeqCst) {
+                return Err(AppError::new("closing", "Viewsical is closing."));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let epoch = manager.inner.lock().map_err(AppError::io)?.epoch;
+                failed(app, epoch, Failure::Closed);
+                return Err(AppError::new(
+                    "overlay_close",
+                    "The previous controls window could not close. Retry controls again.",
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
     let desired = {
         let mut inner = manager.inner.lock().map_err(AppError::io)?;
@@ -574,6 +582,7 @@ mod tests {
             height: 360.,
             visible: true,
             radius: Some(15.),
+            viewport_top: 64.,
         }
     }
     #[test]
@@ -640,8 +649,19 @@ mod tests {
         assert!(desired_geometry(&b, (0, 0), (1440, 900)).is_none());
         b.visible = true;
         b.y = -1.;
-        assert!(desired_geometry(&b, (0, 0), (1440, 900)).is_none());
+        assert_eq!(
+            desired_geometry(&b, (0, 0), (1440, 900)).unwrap().clip.top,
+            65
+        );
         b.y = 800.;
+        assert_eq!(
+            desired_geometry(&b, (0, 0), (1440, 900))
+                .unwrap()
+                .clip
+                .bottom,
+            100
+        );
+        b.y = 901.;
         assert!(desired_geometry(&b, (0, 0), (1440, 900)).is_none());
         b.y = f64::NAN;
         assert!(desired_geometry(&b, (0, 0), (1440, 900)).is_none());

@@ -4,6 +4,7 @@ import { api, isDesktop } from './api';
 import { IconButton } from './ui';
 import { PlayerControls, PlayerSettings, VolumeControl } from './PlayerControls';
 import { useBlockingModal, usePlayerSurfaceClicks, usePlayerVisibility } from './usePlayerInteractions';
+import { playerViewport } from './playerViewport';
 import './player-layout.css';
 import type { PlaybackMode, PlayerAction, PlayerState, PlayerPresentation } from './types';
 
@@ -53,8 +54,9 @@ export function PlayerHost(props: Props) {
       frame = requestAnimationFrame(() => {
         const rect = surface.current?.getBoundingClientRect();
         const scale = window.devicePixelRatio || 1;
-        const visible = hasVideo && !audio && !docked && !effectiveBlocked && ['playing', 'paused', 'preparing', 'buffering'].includes(player.status) && !!rect && rect.width > 0 && rect.height > 0 && rect.top >= (fullscreen ? 0 : 64) && rect.left >= 0 && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1;
-        const bounds = { x: (rect?.x ?? 0) * scale, y: (rect?.y ?? 0) * scale, width: (rect?.width ?? 0) * scale, height: (rect?.height ?? 0) * scale, visible, radius: fullscreen ? 0 : 12 * scale };
+        const allowed = hasVideo && !audio && !docked && !effectiveBlocked && ['playing', 'paused', 'preparing', 'buffering', 'ended'].includes(player.status);
+        const headerBottom = document.querySelector('.topbar')?.getBoundingClientRect().bottom ?? 64;
+        const bounds = playerViewport(rect ?? { x: 0, y: 0, width: 0, height: 0 }, innerWidth, innerHeight, headerBottom, scale, allowed, fullscreen);
         const key = JSON.stringify(bounds);
         if (lastBounds.current !== key) { lastBounds.current = key; void api.playerBounds(bounds).catch(() => { lastBounds.current = ''; }); }
       });

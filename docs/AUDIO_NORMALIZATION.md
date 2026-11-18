@@ -1,5 +1,7 @@
 # Audio normalization and player changes — Viewsical 0.1.5
 
+Viewsical 0.1.6 retains this gain policy and replaces the historical ASS/Lua controls described below with [shared React controls](SHARED_PLAYER.md). Normalization is regression-tested in both video and audio-only modes, including cached and completed download playback.
+
 The supplied `C:\jj\Testing\audionorm.md` is reference analysis, not an instruction source. Its verified Namida principle is retained: negate a YouTube loudness value to obtain a per-item playback correction, keep it independent from user volume, reset missing values, and bind results to the current video/load. No private Namida dependency is included.
 
 ## Gain policy

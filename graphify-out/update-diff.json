@@ -1,0 +1,243 @@
+{
+  "new_nodes": [
+    {
+      "id": "readme_embedded_login_limits",
+      "label": "Embedded Google sign-in limitation"
+    },
+    {
+      "id": "readme_youtube_adapter_modules",
+      "label": "Focused YouTube adapter modules"
+    },
+    {
+      "id": "readme_github_release_downloads",
+      "label": "Latest GitHub release downloads"
+    },
+    {
+      "id": "readme_volume_shortcuts",
+      "label": "Five-point volume keyboard shortcuts"
+    },
+    {
+      "id": "changelog_viewsical_0_1_7",
+      "label": "Viewsical 0.1.7 release changes"
+    },
+    {
+      "id": "changelog_retired_lua_cleanup",
+      "label": "Retired Lua renderer upgrade cleanup"
+    },
+    {
+      "id": "readme_bounded_shutdown",
+      "label": "Bounded main-window shutdown"
+    },
+    {
+      "id": "changelog_verification_record",
+      "label": "0.1.7 verification record"
+    },
+    {
+      "id": "readme_window_state",
+      "label": "Remembered main-window maximization"
+    },
+    {
+      "id": "readme_audio_normalization",
+      "label": "Independent playback loudness normalization"
+    },
+    {
+      "id": "changelog_youtube_adapter_refactor",
+      "label": "Behavior-preserving YouTube adapter refactor"
+    },
+    {
+      "id": "readme_scroll_navigation",
+      "label": "Watch scrolling and Back to top"
+    }
+  ],
+  "removed_nodes": [],
+  "new_edges": [
+    {
+      "source": "readme_audio_normalization",
+      "target": "docs_audio_normalization_audio_normalization",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_window_state",
+      "target": "docs_audio_normalization_window_state_isolation",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "docs_shared_player_final_item_eof_recovery",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_volume_shortcuts",
+      "target": "docs_shared_player_relative_volume_actions",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED"
+    },
+    {
+      "source": "changelog_verification_record",
+      "target": "docs_shared_player_shared_controls",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_verification_record",
+      "target": "docs_scroll_navigation_scrolling_navigation",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_scroll_navigation",
+      "target": "docs_scroll_navigation_scrolling_navigation",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "readme_release_packages",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_github_release_downloads",
+      "target": "readme_release_packages",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_viewsical",
+      "target": "readme_audio_normalization",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_viewsical",
+      "target": "readme_bounded_shutdown",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_viewsical",
+      "target": "readme_embedded_login_limits",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_viewsical",
+      "target": "readme_github_release_downloads",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_viewsical",
+      "target": "readme_scroll_navigation",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_viewsical",
+      "target": "readme_volume_shortcuts",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_viewsical",
+      "target": "readme_window_state",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_viewsical",
+      "target": "readme_youtube_adapter_modules",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "readme_codebase_graph",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "readme_incremental_pagination",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "readme_media_helpers",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_bounded_shutdown",
+      "target": "readme_session_isolation",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "readme_embedded_login_limits",
+      "target": "readme_session_isolation",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "readme_stable_app_identifier",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "readme_native_player",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_youtube_adapter_refactor",
+      "target": "readme_youtube_adapter_modules",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "readme_volume_shortcuts",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "readme_audio_normalization",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "readme_scroll_navigation",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "changelog_retired_lua_cleanup",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "changelog_verification_record",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "source": "changelog_viewsical_0_1_7",
+      "target": "changelog_youtube_adapter_refactor",
+      "relation": "references",
+      "confidence": "EXTRACTED"
+    }
+  ],
+  "removed_edges": [],
+  "summary": "12 new nodes, 31 new edges"
+}

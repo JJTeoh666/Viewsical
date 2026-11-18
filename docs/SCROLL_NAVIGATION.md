@@ -1,0 +1,9 @@
+# Scrolling and navigation — Viewsical 0.1.7
+
+The previous player visibility check required its whole rectangle to fit below the header and inside the window. Scrolling even a few pixels past those limits hid both native windows and left the black HTML placeholder visible.
+
+`playerViewport.ts` now sends the original physical player rectangle and the header's actual bottom edge. Rust's `player_geometry::visible_clip` intersects that rectangle with the available client viewport. Both mpv's child surface and the controls window receive the same rounded region intersected with that clip. Window size stays unchanged, so scrolling crops the video without rescaling or reopening it. Fully offscreen, audio-only, docked and blocked surfaces remain hidden. The header stays outside the native regions and remains usable. Fullscreen uses the entire client viewport.
+
+The header has a separate 46px circular search submit button, with hover, keyboard focus and accessible naming. Its redundant Home shortcut is removed; sidebar and logo navigation remain. Home and individual playlists show a circular Back to top control after 320px of scrolling. It respects reduced motion, returns focus to the heading, preserves loaded pages and avoids the floating/bottom player.
+
+Verification includes four frontend geometry tests, two Rust clipping tests, the existing control and navigation regressions, and actual Windows mpv rendering. Native region diagnostics confirm identical clipping on mpv and the controls, unchanged video dimensions/load ID during scrolling, hiding when fully offscreen, and restoration without source reload. A Windows screenshot inspection confirmed visible video below the fixed header while scrolled. The header's search button and back-to-top flows are also exercised in browser fixtures. Native inspection uses this computer's current 125% Windows scale; browser layout checks cover 100%, 125%, 150% and 200% density.

@@ -8,3 +8,12 @@ tools/*.zip
 tools/mpv/
 artifacts/
 *.log
+*.tsbuildinfo
+__pycache__/
+*.pyc
+# Graph outputs are shared; extraction caches and host-specific state are local.
+graphify-out/cache/
+graphify-out/20??-??-??/
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/.graphify_build_state.json

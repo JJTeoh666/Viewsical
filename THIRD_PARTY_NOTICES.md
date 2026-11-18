@@ -11,6 +11,7 @@ Viewsical bundles these independently maintained tools. Exact binary hashes and 
 | FFmpeg / FFprobe | GPL enabled in the selected Gyan essentials build. Build information, corresponding sources and dependencies: https://www.gyan.dev/ffmpeg/builds/ and https://ffmpeg.org/legal.html |
 | Tauri | Apache-2.0 or MIT: https://github.com/tauri-apps/tauri |
 | Tauri single-instance plugin | Apache-2.0 or MIT: https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/single-instance |
+| webview2-com | MIT: https://github.com/wravery/webview2-rs |
 | React | MIT: https://github.com/facebook/react |
 | Roboto | Apache-2.0: https://github.com/googlefonts/roboto |
 | Lucide | ISC: https://lucide.dev/license |

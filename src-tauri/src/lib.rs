@@ -5,6 +5,7 @@ mod models;
 mod normalization;
 mod overlay;
 mod player;
+mod player_geometry;
 mod runtime;
 mod session;
 mod store;
