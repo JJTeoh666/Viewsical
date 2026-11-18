@@ -284,7 +284,6 @@ h2 { font-size: 20px; line-height: 1.35; }
 .history-row { display: flex; align-items: flex-start; gap: 20px; padding-bottom: 22px; }
 .history-thumbnail { width: 230px; flex-shrink: 0; background: none; padding: 0; position: relative; border-radius: 10px; overflow: hidden; }
 .history-thumbnail .thumbnail { border-radius: 10px; }
-.history-progress { position: absolute; z-index: 2; left: 0; bottom: 0; height: 3px; background: var(--red); }
 .history-row>div { flex: 1; padding-top: 4px; }
 .history-position { display: flex; align-items: center; font-size: 12px; color: var(--muted); margin-top: 14px; }
 .history-position>svg { margin-right: 5px; }
@@ -404,11 +403,10 @@ h2 { font-size: 20px; line-height: 1.35; }
 .player-host .player-surface { border-radius: 12px; }
 .player-host-empty { display: none; }
 .accessible-controls { position: relative; }
-.a11y-controls-toggle, .mode-quick-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 7px 0; background: none; font-size: 11px; color: var(--muted); }
-.a11y-controls-toggle:hover, .mode-quick-toggle:hover { color: var(--text); }
-.mode-quick-toggle { position: absolute; right: 0; bottom: 0; }
-.audio-player .mode-quick-toggle { position: static; }
-.controls-revealed:not(.audio-player) .mode-quick-toggle { position: static; margin-top: 2px; }
+.accessible-controls:not(.has-overlay-error):not(:focus-within) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
+.mode-quick-toggle { display: flex; width: max-content; align-items: center; gap: 6px; padding: 7px 0; background: none; font-size: 11px; color: var(--muted); }
+.mode-quick-toggle:hover { color: var(--text); }
+.player-host:not(.audio-player) .mode-quick-toggle { margin-left: auto; }
 .html-player-controls { border-radius: 0 0 8px 8px; }
 .player-settings { position: relative; }
 .player-settings-menu { position: absolute; z-index: 25; top: calc(100% + 9px); right: 0; width: 305px; max-height: 360px; overflow-y: auto; background: #262626f5; color: #fff; border: 1px solid #ffffff10; border-radius: 12px; padding: 7px 0; box-shadow: 0 8px 30px #0004; backdrop-filter: blur(14px); }

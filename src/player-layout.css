@@ -54,7 +54,8 @@
 .bottom-player .icon-button { width: 32px; height: 32px; padding: 6px; flex-shrink: 0; }
 .bottom-player-progress { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .bottom-player-progress>span { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.bottom-player .seek-slider { flex: 1; min-width: 20px; width: auto; margin: 0; height: 4px; background: linear-gradient(to right, var(--text) var(--range-progress), var(--surface-pressed) var(--range-progress)); }
+.bottom-player .seek-track { flex: 1; min-width: 20px; }
+.bottom-player .seek-slider { background: linear-gradient(to right, var(--text) var(--range-progress), var(--surface-pressed) var(--range-progress)); }
 .bottom-player .seek-slider::-webkit-slider-thumb { background: var(--text); width: 10px; height: 10px; }
 .bottom-player .seek-slider::-moz-range-thumb { background: var(--text); width: 10px; height: 10px; }
 .bottom-player .seek-slider:hover { background: linear-gradient(to right, var(--red) var(--range-progress), var(--surface-pressed) var(--range-progress)); }
@@ -94,8 +95,13 @@
   position: fixed; inset: 0; overflow: hidden; isolation: isolate;
   background: rgba(0, 0, 0, 0.003922); color: #fff;
   --player-menu-max-height: max(64px, calc(100dvh - 95px));
+}
+:is(.player-overlay-root, .is-canvas-video) {
   --red: #f03; --text: #fff; --blue: #73b8ff;
   --surface-hover: #ffffff20; --surface-pressed: #ffffff50;
+}
+.video-frame-canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
 }
 .player-overlay-root.overlay-compact { --player-menu-max-height: max(64px, calc(100dvh - 80px)); }
 .player-host .player-settings-menu {
@@ -118,13 +124,15 @@
   padding: 32px 12px 8px;
   color: #fff;
 }
-.player-overlay-root .html-player-controls { border-radius: 0; }
-.player-overlay-root .player-time > span { color: #ddd; }
-.player-overlay-root .seek-slider { background: linear-gradient(to right, #f03 var(--range-progress), #ffffff50 var(--range-progress)); }
-.player-overlay-root input[type='range'] { color: #fff; }
-.player-overlay-root .icon-button:hover:not(:disabled) { background: #ffffff20; }
-.player-overlay-root .player-settings { position: relative; }
+:is(.player-overlay-root, .is-canvas-video) .html-player-controls { border-radius: 0; }
+:is(.player-overlay-root, .is-canvas-video) .player-time > span { color: #ddd; }
+:is(.player-overlay-root, .is-canvas-video) .seek-slider { background: linear-gradient(to right, #f03 var(--range-progress), #ffffff50 var(--range-progress)); }
+:is(.player-overlay-root, .is-canvas-video) input[type='range'] { color: #fff; }
+:is(.player-overlay-root, .is-canvas-video) .icon-button:hover:not(:disabled) { background: #ffffff20; }
+:is(.player-overlay-root, .is-canvas-video) .player-settings { position: relative; }
 .player-overlay-root .player-settings-menu { width: min(305px, calc(100dvw - 24px)); }
+.is-canvas-video .player-settings-menu { width: min(305px, calc(100cqw - 24px)); overscroll-behavior: contain; }
+.is-canvas-video .player-title-gradient { color: #fff; }
 .player-title-gradient {
   position: absolute; inset: 0 0 auto; min-height: 84px;
   padding: 18px 18px 40px;
@@ -142,7 +150,18 @@
 .overlay-control-error { position: absolute; inset: auto 12px 90px; padding: 10px; border-radius: 6px; font-size: 12px; background: #202024e8; pointer-events: none; }
 .overlay-fallback { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 0; font-size: 12px; color: var(--muted); }
 .shared-player-controls .volume-control input { touch-action: none; }
-.shared-player-controls .seek-slider { touch-action: none; }
+.shared-player-controls .seek-track { position: relative; margin-inline: 6px; }
+.shared-player-controls .seek-slider { width: 100%; margin: 0; touch-action: none; }
+.shared-player-controls .seek-heatmap {
+  position: absolute; inset: auto 6px 100%; height: 9px;
+  background: var(--muted); opacity: .46; pointer-events: none;
+}
+.shared-player-controls.surface-player-controls .seek-heatmap {
+  height: 28px; background: #fff; opacity: .38;
+}
+.shared-player-controls.compact-controls .seek-heatmap { height: 19px; }
+.bottom-player .shared-player-controls .seek-track { margin-inline: 0; }
+.bottom-player .shared-player-controls .seek-heatmap { inset-inline: 5px; }
 .player-surface { container-type: size; }
 .player-surface .audio-overlay-controls { --player-menu-max-height: max(64px, calc(100cqh - 95px)); }
 .bottom-player-options .player-settings-menu { --player-menu-max-height: calc(100dvh - 140px); }

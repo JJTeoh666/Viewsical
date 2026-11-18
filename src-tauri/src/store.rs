@@ -19,6 +19,18 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(AppError::io)?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS local_history (video_id TEXT NOT NULL, partition TEXT NOT NULL, json TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(video_id,partition)); CREATE TABLE IF NOT EXISTS downloads (id TEXT PRIMARY KEY, json TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS ui_state (key TEXT PRIMARY KEY, value INTEGER NOT NULL CHECK(value IN (0,1)));").map_err(AppError::io)?;
+        let version: u32 = db
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(AppError::io)?;
+        if version == 0 {
+            db.execute_batch(
+                "BEGIN IMMEDIATE;
+                 UPDATE local_history SET json = json_remove(json, '$.position') WHERE json_valid(json);
+                 PRAGMA user_version = 1;
+                 COMMIT;",
+            )
+            .map_err(AppError::io)?;
+        }
         Ok(Self {
             db: Mutex::new(db),
             account_history: AtomicBool::new(false),
@@ -71,7 +83,8 @@ impl Store {
         ).map_err(AppError::io)?;
         Ok(())
     }
-    pub fn history(&self) -> AppResult<Vec<HistoryItem>> {
+    #[cfg(test)]
+    fn history(&self) -> AppResult<Vec<HistoryItem>> {
         self.history_for(self.account_history.load(Ordering::SeqCst))
     }
     pub fn set_account_partition(&self, active: bool) {
@@ -96,10 +109,9 @@ impl Store {
         rows.map(|r| serde_json::from_str(&r.map_err(AppError::io)?).map_err(AppError::io))
             .collect()
     }
-    pub fn record_history(&self, video: &MediaItem, position: f64, duration: f64) -> AppResult<()> {
+    pub fn record_history(&self, video: &MediaItem, duration: f64) -> AppResult<()> {
         let entry = HistoryItem {
             video: video.clone(),
-            position: position.max(0.),
             duration: duration.max(0.),
             updated_at: now(),
         };
@@ -207,15 +219,30 @@ mod tests {
                 kind: "video".into(),
                 ..Default::default()
             };
-            store.record_history(&video, 12., 30.).unwrap();
-            store.record_history(&video, 20., 30.).unwrap();
+            store.record_history(&video, 12.).unwrap();
+            store.record_history(&video, 30.).unwrap();
+            store
+                .db
+                .lock()
+                .unwrap()
+                .execute_batch(
+                    "UPDATE local_history SET json = json_set(json, '$.position', 20);
+                 PRAGMA user_version = 0;",
+                )
+                .unwrap();
         }
         let store = Store::new(&paths).unwrap();
         assert_eq!(store.settings().unwrap().theme, "dark");
         assert!(store.settings().unwrap().always_audio_only);
         assert!(!store.settings().unwrap().normalize_audio);
         assert_eq!(store.history().unwrap().len(), 1);
-        assert_eq!(store.history().unwrap()[0].position, 20.);
+        assert_eq!(store.history().unwrap()[0].duration, 30.);
+        let rows_with_positions: u32 = store.db.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM local_history WHERE json_type(json, '$.position') IS NOT NULL",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(rows_with_positions, 0);
         store.set_account_partition(true);
         assert!(store.history().unwrap().is_empty());
         store
@@ -224,7 +251,6 @@ mod tests {
                     id: "private".into(),
                     ..Default::default()
                 },
-                5.,
                 8.,
             )
             .unwrap();
@@ -232,7 +258,7 @@ mod tests {
         store.clear_private_history().unwrap();
         assert!(store.history().unwrap().is_empty());
         store.set_account_partition(false);
-        assert_eq!(store.history().unwrap()[0].position, 20.);
+        assert_eq!(store.history().unwrap()[0].video.id, "BaW_jenozKc");
         store.clear_history().unwrap();
         assert!(store.history().unwrap().is_empty());
         drop(store);

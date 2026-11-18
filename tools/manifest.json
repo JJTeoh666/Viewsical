@@ -1,50 +1,58 @@
 [
   {
-    "archiveSha256": "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d",
-    "sha256": "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d",
     "source": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp.exe",
+    "file": "yt-dlp.exe",
     "version": "2026.10.26",
+    "archiveSha256": "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d",
     "name": "yt-dlp",
-    "file": "yt-dlp.exe"
+    "sha256": "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d"
   },
   {
-    "archiveSha256": "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf",
-    "sha256": "924397800533d3eb0ed0c889b20ad70e18b970d93acd8135bc043f425e528266",
     "source": "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip",
+    "file": "deno.exe",
     "version": "2.9.8",
+    "archiveSha256": "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf",
     "name": "Deno",
-    "file": "deno.exe"
+    "sha256": "924397800533d3eb0ed0c889b20ad70e18b970d93acd8135bc043f425e528266"
   },
   {
-    "archiveSha256": "f259b5fd4b5c395617c948a4fadcdf55bba1c5282fb7c13e88626b3f71072baf",
-    "sha256": "3ea89fe7a4284b25dff3c72e1bde83e27324c90cfc4a074fe679293d19ee7c85",
     "source": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-x86_64-20261111-git-bcde6b93cc.7z",
+    "file": "mpv.exe",
     "version": "20261111-git-bcde6b93cc",
+    "archiveSha256": "f259b5fd4b5c395617c948a4fadcdf55bba1c5282fb7c13e88626b3f71072baf",
     "name": "mpv",
-    "file": "mpv.exe"
+    "sha256": "3ea89fe7a4284b25dff3c72e1bde83e27324c90cfc4a074fe679293d19ee7c85"
   },
   {
-    "archiveSha256": "e25b682664025d49034c981afb4bae36238a40f29a3cc1c713ad9a8b5b3528f6",
-    "sha256": "1326dde4c84ff1f96fe6b8916c5bed29e163e9b5dccf995f6f3db069d143ec5e",
+    "source": "https://github.com/mpv-player/mpv/releases/download/v0.42.0/libmpv-v0.42.0-x86_64-w64-mingw32-lgpl.zip",
+    "file": "libmpv-2.dll",
+    "version": "0.42.0",
+    "archiveSha256": "8e5f77430efc53ef175804ba6618527e3af0448a0dcabf04d3cc72659d1a6fce",
+    "name": "libmpv",
+    "sha256": "94fb87247732c59915cd59808bc582e843a71c22214b7b6c1e5563aa8149cef4"
+  },
+  {
     "source": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.7z",
+    "file": "ffmpeg.exe",
     "version": "8.1.2-essentials",
+    "archiveSha256": "e25b682664025d49034c981afb4bae36238a40f29a3cc1c713ad9a8b5b3528f6",
     "name": "FFmpeg",
-    "file": "ffmpeg.exe"
+    "sha256": "1326dde4c84ff1f96fe6b8916c5bed29e163e9b5dccf995f6f3db069d143ec5e"
   },
   {
-    "archiveSha256": "e25b682664025d49034c981afb4bae36238a40f29a3cc1c713ad9a8b5b3528f6",
-    "sha256": "b49ccc7c6547b141ad5a2f6ec69cc04323d7133d7704d70b331b904c63eecb07",
     "source": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.7z",
+    "file": "ffprobe.exe",
     "version": "8.1.2-essentials",
+    "archiveSha256": "e25b682664025d49034c981afb4bae36238a40f29a3cc1c713ad9a8b5b3528f6",
     "name": "FFprobe",
-    "file": "ffprobe.exe"
+    "sha256": "b49ccc7c6547b141ad5a2f6ec69cc04323d7133d7704d70b331b904c63eecb07"
   },
   {
-    "archiveSha256": "f259b5fd4b5c395617c948a4fadcdf55bba1c5282fb7c13e88626b3f71072baf",
-    "sha256": "4b074a3976399dc735484f5d43d04b519b7bdee8ac719d9ab8ed6bd4e6be0345",
     "source": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-x86_64-20261111-git-bcde6b93cc.7z",
+    "file": "d3dcompiler_43.dll",
     "version": "20261111-git-bcde6b93cc",
+    "archiveSha256": "f259b5fd4b5c395617c948a4fadcdf55bba1c5282fb7c13e88626b3f71072baf",
     "name": "mpv Direct3D compiler helper",
-    "file": "d3dcompiler_43.dll"
+    "sha256": "4b074a3976399dc735484f5d43d04b519b7bdee8ac719d9ab8ed6bd4e6be0345"
   }
 ]

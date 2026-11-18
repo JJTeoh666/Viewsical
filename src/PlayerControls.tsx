@@ -3,7 +3,7 @@ import type { CSSProperties, KeyboardEvent } from 'react';
 import { ArrowLeft, Check, ChevronRight, Gauge, Headphones, Maximize, Music2, Pause, Play, RectangleHorizontal, Settings, SkipBack, SkipForward, SlidersHorizontal, Video, Volume2, VolumeX } from 'lucide-react';
 import { time } from './format';
 import { IconButton } from './ui';
-import type { PlaybackMode, PlayerAction, PlayerState } from './types';
+import type { PlaybackMode, PlayerAction, PlayerState, ReplayHeatmapInterval } from './types';
 
 interface SettingsProps { player: PlayerState; audio: boolean; visible?: boolean; onAction: (action: PlayerAction, value?: number) => void; onMode: (mode: PlaybackMode) => void; onMenuChange?: (open: boolean) => void }
 export function PlayerSettings({ player, audio, visible = true, onAction, onMode, onMenuChange }: SettingsProps) {
@@ -51,21 +51,74 @@ interface ControlsProps {
   onMenuChange?: (open: boolean) => void; onDragging?: (active: boolean) => void;
 }
 
+function replayHeatmap(intervals: ReplayHeatmapInterval[], duration: number) {
+  const vertices = ['0% 100%'];
+  const vertex = (seconds: number, value: number) =>
+    `${(seconds / duration * 100).toFixed(3)}% ${((1 - value) * 100).toFixed(2)}%`;
+  let lastEnd = 0, lastValue = 0, peakTime = 0, peakValue = 0;
+  for (const interval of intervals) {
+    const start = Math.max(lastEnd, interval.startTime);
+    const end = Math.min(duration, interval.endTime);
+    if (end <= start) continue;
+    const middle = (start + end) / 2;
+    if (start > lastEnd + 0.01) {
+      vertices.push(vertex(lastEnd, lastValue), vertex(lastEnd, 0), vertex(start, 0), vertex(start, interval.value));
+    } else if (vertices.length === 1) {
+      vertices.push(vertex(start, interval.value));
+    }
+    vertices.push(vertex(middle, interval.value));
+    if (interval.value > peakValue) {
+      peakTime = middle;
+      peakValue = interval.value;
+    }
+    lastEnd = end;
+    lastValue = interval.value;
+  }
+  if (peakValue === 0) return null;
+  vertices.push(vertex(lastEnd, lastValue), vertex(lastEnd, 0), '100% 100%');
+  return { clipPath: `polygon(${vertices.join(', ')})`, peakTime };
+}
+
+interface HeatmapProps { intervals: ReplayHeatmapInterval[]; duration: number; descriptionId: string }
+
+const ReplayHeatmap = memo(function ReplayHeatmap({ intervals, duration, descriptionId }: HeatmapProps) {
+  const heatmap = replayHeatmap(intervals, duration);
+  if (!heatmap) return null;
+  return <>
+    <div className="seek-heatmap" aria-hidden="true" style={{ clipPath: heatmap.clipPath }} />
+    <span className="sr-only" id={descriptionId}>Most replayed around {time(heatmap.peakTime)}</span>
+  </>;
+}, (previous, next) => previous.duration === next.duration && previous.descriptionId === next.descriptionId
+  && previous.intervals.length === next.intervals.length
+  // Native progress events deserialize fresh copies of the same metadata.
+  && previous.intervals.every((point, i) => {
+    const nextPoint = next.intervals[i];
+    return point.startTime === nextPoint.startTime && point.endTime === nextPoint.endTime && point.value === nextPoint.value;
+  }));
+
 function usePlaybackPosition(player: PlayerState, active: boolean) {
   const slider = useRef<HTMLInputElement>(null), dragging = useRef(false);
   const anchor = useRef({ position: player.position, time: performance.now(), player });
   const [position, setPosition] = useState(player.position);
+  const displayedSecond = useRef(Math.floor(player.position));
   const draw = (value: number) => {
     const input = slider.current;
-    if (input && !dragging.current) input.value = String(value);
     input?.style.setProperty('--range-progress', `${anchor.current.player.duration ? Math.min(100, value / anchor.current.player.duration * 100) : 0}%`);
-    setPosition(previous => Math.floor(previous) === Math.floor(value) ? previous : value);
+    const second = Math.floor(value);
+    if (second !== displayedSecond.current) {
+      displayedSecond.current = second;
+      setPosition(value);
+    }
+    if (input && !dragging.current) {
+      const stepValue = Math.round(value * 10) / 10;
+      if (input.valueAsNumber !== stepValue) input.valueAsNumber = stepValue;
+    }
   };
+  useEffect(() => { dragging.current = false; }, [player.loadId]);
   useEffect(() => {
     anchor.current = { position: player.position, time: performance.now(), player };
-    if (!dragging.current) draw(player.position);
-  }, [player.position, player.duration, player.status, player.speed, player.loadId]);
-  useEffect(() => { dragging.current = false; }, [player.loadId]);
+    if (active && !dragging.current) draw(player.position);
+  }, [active, player.position, player.duration, player.status, player.speed, player.loadId]);
   useEffect(() => {
     if (!active || player.status !== 'playing') return;
     let frame = 0;
@@ -77,7 +130,7 @@ function usePlaybackPosition(player: PlayerState, active: boolean) {
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, [active, player.status, player.loadId]);
-  return { slider, dragging, position, preview: (value: number) => { setPosition(value); slider.current?.style.setProperty('--range-progress', `${player.duration ? value / player.duration * 100 : 0}%`); }, commit: (value: number) => { anchor.current = { position: value, time: performance.now(), player }; draw(value); } };
+  return { slider, dragging, position, preview: draw, commit: (value: number) => { anchor.current = { position: value, time: performance.now(), player }; draw(value); } };
 }
 
 export function VolumeControl({ player, onAction, compact = false }: { player: PlayerState; onAction: ControlsProps['onAction']; compact?: boolean }) {
@@ -88,6 +141,10 @@ export const PlayerControls = memo(function PlayerControls({ player, audio, comp
   const seekId = useId(), progress = usePlaybackPosition(player, visible);
   const pointerLoad = useRef(player.loadId), cancelledSeek = useRef(false);
   const busy = ['resolving', 'preparing'].includes(player.status), playing = ['playing', 'buffering'].includes(player.status);
+  const intervals = player.video?.heatmap;
+  const showHeatmap = !busy && Number.isFinite(player.duration) && player.duration > 0
+    && intervals?.some(point => point.value > 0 && point.startTime < player.duration && point.endTime > 0);
+  const heatmapId = showHeatmap ? `${seekId}-heatmap` : undefined;
   useEffect(() => { if (pointerLoad.current !== player.loadId) cancelledSeek.current = true; progress.dragging.current = false; onDragging?.(false); }, [player.loadId]);
   function finishSeek(commit: boolean) {
     if (!progress.dragging.current) return;
@@ -96,16 +153,19 @@ export const PlayerControls = memo(function PlayerControls({ player, audio, comp
       const value = Number(progress.slider.current.value); progress.commit(value); onAction('seek', value);
     } else progress.commit(player.position);
   }
-  const seek = <><label className="sr-only" htmlFor={seekId}>Playback position</label><input ref={progress.slider} data-player-range id={seekId} className="seek-slider" type="range" min="0" max={Math.max(1, player.duration)} step="0.1" defaultValue={player.position} style={{ '--range-progress': `${player.duration ? player.position / player.duration * 100 : 0}%` } as CSSProperties}
+  const seek = <div className="seek-track">
+    {intervals && heatmapId && <ReplayHeatmap intervals={intervals} duration={player.duration} descriptionId={heatmapId} />}
+    <label className="sr-only" htmlFor={seekId}>Playback position</label><input ref={progress.slider} data-player-range id={seekId} className="seek-slider" type="range" min="0" max={Math.max(1, player.duration)} step="0.1" defaultValue={player.position} style={{ '--range-progress': `${player.duration ? player.position / player.duration * 100 : 0}%` } as CSSProperties}
     onPointerDown={event => { cancelledSeek.current = false; pointerLoad.current = player.loadId; progress.dragging.current = true; onDragging?.(true); event.currentTarget.setPointerCapture(event.pointerId); }}
     onPointerUp={() => finishSeek(true)} onPointerCancel={() => { cancelledSeek.current = true; finishSeek(false); }} onLostPointerCapture={() => { if (progress.dragging.current) { cancelledSeek.current = true; finishSeek(false); } }} onKeyDown={() => { cancelledSeek.current = false; }}
     onChange={event => { if (cancelledSeek.current) return; const value = Number(event.target.value); progress.preview(value); if (!progress.dragging.current) { progress.commit(value); onAction('seek', value); } }}
-    disabled={busy || !player.duration} aria-valuetext={`${time(progress.position)} of ${time(player.duration)}`} /></>;
-  const transport = <><IconButton label="Previous video" disabled={!hasPrevious} onClick={onPrevious}><SkipBack size={20} fill="currentColor" /></IconButton><IconButton label={playing ? 'Pause (Space)' : 'Play (Space)'} disabled={busy} onClick={() => ['ended', 'failed'].includes(player.status) && onRetry ? onRetry() : onAction('toggle')} className={variant === 'dock' ? 'bottom-play-button' : 'play-control'}>{playing ? <Pause size={23} fill="currentColor" /> : <Play size={23} fill="currentColor" />}</IconButton><IconButton label="Next video" disabled={!hasNext} onClick={onNext}><SkipForward size={20} fill="currentColor" /></IconButton></>;
+    disabled={busy || !player.duration} aria-valuetext={`${time(progress.position)} of ${time(player.duration)}`} aria-describedby={heatmapId} />
+  </div>;
+  const transport = <><IconButton label="Previous video" disabled={!hasPrevious} onClick={onPrevious}><SkipBack size={20} fill="currentColor" /></IconButton><IconButton label={playing ? 'Pause (Space)' : 'Play (Space)'} disabled={busy} onClick={() => player.status === 'failed' && onRetry ? onRetry() : onAction('toggle')} className={variant === 'dock' ? 'bottom-play-button' : 'play-control'}>{playing ? <Pause size={23} fill="currentColor" /> : <Play size={23} fill="currentColor" />}</IconButton><IconButton label="Next video" disabled={!hasNext} onClick={onNext}><SkipForward size={20} fill="currentColor" /></IconButton></>;
   if (variant === 'dock') return <div className="bottom-player-transport shared-player-controls" role="group" aria-label="Playback controls"><div className="bottom-transport-buttons">{transport}</div><div className="bottom-player-progress"><span>{time(progress.position)}</span>{seek}<span>{time(player.duration)}</span></div></div>;
   return <div className={`player-controls html-player-controls shared-player-controls ${compact ? 'compact-controls' : ''} ${variant === 'surface' ? 'surface-player-controls' : ''}`} data-player-interactive>
     {seek}<div className="control-row"><div className="control-group">{transport}<VolumeControl player={player} onAction={onAction} compact={compact} /><span className="player-time">{time(progress.position)}<span> / {time(player.duration)}</span></span></div>
-      <div className="control-group right-controls"><PlayerSettings player={player} audio={audio} visible={visible} onAction={onAction} onMode={onMode} onMenuChange={onMenuChange} />{!compact && <IconButton label={theater ? 'Exit theater mode' : 'Theater mode'} onClick={onTheater}><RectangleHorizontal size={21} /></IconButton>}<IconButton label={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'} onClick={onFullscreen}><Maximize size={21} /></IconButton></div>
+      <div className="control-group right-controls"><PlayerSettings player={player} audio={audio} visible={visible} onAction={onAction} onMode={onMode} onMenuChange={onMenuChange} />{!compact && <><IconButton label={theater ? 'Exit theater mode' : 'Theater mode'} onClick={onTheater}><RectangleHorizontal size={21} /></IconButton><IconButton label={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'} onClick={onFullscreen}><Maximize size={21} /></IconButton></>}</div>
     </div>
   </div>;
 });

@@ -22,6 +22,38 @@ fn loudness_metadata_survives_stable_media_storage() {
 }
 use serde_json::json;
 #[test]
+fn playback_heatmap_preserves_valid_normalized_replay_segments() {
+    let response = json!({
+        "id":"dQw4w9WgXcQ", "url":"https://rr.googlevideo.com/a?expire=500",
+        "vcodec":"none", "acodec":"opus", "protocol":"https",
+        "heatmap":[
+            {"start_time":2.14, "end_time":4.28, "value":0.42},
+            {"start_time":9.0, "end_time":10.0, "value":1.5},
+            {"start_time":4.5, "end_time":3.0, "value":0.8},
+            {"start_time":0.0, "end_time":2.14, "value":1.0},
+            {"start_time":-1.0, "end_time":1.0, "value":0.7}
+        ]
+    });
+    let video = playback_from_json(&response, 1).unwrap().video;
+    let serialized = serde_json::to_value(&video).unwrap();
+    assert_eq!(
+        serialized["heatmap"],
+        json!([
+            {"startTime":0.0, "endTime":2.14, "value":1.0},
+            {"startTime":2.14, "endTime":4.28, "value":0.42}
+        ])
+    );
+    let restored: MediaItem = serde_json::from_value(serialized).unwrap();
+    assert_eq!(restored.heatmap, video.heatmap);
+    let legacy = serde_json::to_value(media_item(&json!({"id":"dQw4w9WgXcQ"})).unwrap()).unwrap();
+    assert!(legacy.get("heatmap").is_none());
+    assert!(serde_json::from_value::<MediaItem>(legacy)
+        .unwrap()
+        .heatmap
+        .is_none());
+}
+
+#[test]
 fn normalizes_identity_without_retaining_tracking_parameters() {
     let reference =
         normalize_video_ref("https://youtu.be/BaW_jenozKc?t=1m2s&list=PLabc123&si=tracking")

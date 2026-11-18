@@ -15,6 +15,7 @@ pub use errors::classify_error;
 pub use gateway::YoutubeGateway;
 pub use identity::{canonical_video, ensure_generation, normalize_video_ref};
 pub use metadata::media_item;
+pub(crate) use metadata::replay_heatmap;
 pub use playback::PlaybackPlan;
 
 use crate::{

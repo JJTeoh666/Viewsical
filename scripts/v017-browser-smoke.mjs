@@ -18,6 +18,7 @@ async function scaledOverlayChecks(browser, output, check) {
     await page.addInitScript(()=>{
       let callbackId=0;const callbacks=new Map(),listeners=new Map();
       const player={status:'paused',video:{id:'dQw4w9WgXcQ',kind:'video',title:'Scaled shared controls',channel:'Fixture',thumbnail:null,url:'https://www.youtube.com/watch?v=dQw4w9WgXcQ',duration:360,viewCount:1,description:null},position:30,duration:360,volume:37,muted:false,speed:1,quality:1080,qualities:[1080,720,480],error:null,loadId:1,playbackMode:'video',requestedQuality:1080,bufferedSeconds:30,errorCode:null};
+      player.video.heatmap=[{startTime:0,endTime:120,value:0.15},{startTime:120,endTime:240,value:1},{startTime:240,endTime:360,value:0.3}];
       window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:(_,id)=>listeners.delete(id)};
       window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'player-overlay'},currentWebview:{label:'player-overlay'}},transformCallback:fn=>{const id=++callbackId;callbacks.set(id,fn);return id;},unregisterCallback:id=>callbacks.delete(id),invoke:async(command,args={})=>{
         if(command==='plugin:event|listen'){const id=++callbackId;listeners.set(id,args);return id;}
@@ -28,6 +29,15 @@ async function scaledOverlayChecks(browser, output, check) {
       }};
     });
     await page.goto('http://127.0.0.1:1423/?player-overlay=1');await page.locator('.player-overlay-root').waitFor();await page.mouse.move(500,250);await page.getByRole('button',{name:'Playback settings',exact:true}).click();
+    const graph = page.locator('.seek-heatmap');
+    check(`Video replay heatmap fits at DPR ${scale} in ${theme} scheme`, await graph.isVisible() && await graph.evaluate(el => {
+      const graph = el.getBoundingClientRect(), slider = el.parentElement.querySelector('input');
+      const rail = slider.getBoundingClientRect(), style = getComputedStyle(el);
+      const description = document.getElementById(slider.getAttribute('aria-describedby'));
+      return graph.left >= rail.left && graph.right <= rail.right && Math.abs(graph.bottom - rail.top) < 0.5
+        && style.pointerEvents === 'none' && style.clipPath.startsWith('polygon(')
+        && description?.textContent === 'Most replayed around 3:00';
+    }));
     const dimensions=await page.locator('.player-settings-menu').evaluate(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return{ratio:devicePixelRatio,x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:r.width,height:r.height,shadow:s.boxShadow,radius:s.borderRadius,stroke:[...el.querySelectorAll(':scope > button > svg')].map(svg=>getComputedStyle(svg).strokeWidth),rowHeights:[...el.querySelectorAll(':scope > button')].map(b=>b.getBoundingClientRect().height),overflow:document.documentElement.scrollWidth>innerWidth};});
     check(`Shared menu fits at DPR ${scale} in ${theme} scheme`,Math.abs(dimensions.ratio-scale)<.001&&Math.abs(dimensions.width-305)<1&&dimensions.x>=0&&dimensions.y>=0&&dimensions.right<=1000&&dimensions.bottom<=560&&!dimensions.overflow&&dimensions.shadow==='none'&&dimensions.radius==='12px'&&dimensions.stroke.every(x=>x==='2px')&&dimensions.rowHeights.every(h=>h>=44),dimensions);
     await page.screenshot({path:path.join(output,`v017-browser-menu-${theme}-${String(scale).replace('.','_')}.png`)});
@@ -41,7 +51,9 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
     const art = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="#6c7da2"/><stop offset=".6" stop-color="#243957"/><stop offset="1" stop-color="#131b32"/></linearGradient></defs><path fill="url(#g)" d="M0 0h640v360H0z"/><circle fill="#d8c4ad" cx="490" cy="95" r="47"/><path fill="#405777" d="m0 270 130-145 130 115L420 80l220 210v70H0z"/><path fill="#16263f" d="m0 320 170-135 120 115 115-105 235 140v25H0z"/></svg>')}`;
-    const video = index => ({ id: index === 3 || index === 28 ? 'duplicate-id' : `fixture-${index}`, kind: 'video', title: `Fixture video ${String(index).padStart(2, '0')}`, channel: 'Fixture Music', thumbnail: art, url: `https://www.youtube.com/watch?v=fixture${index}`, duration: 190 + index, viewCount: 10000 + index * 153, description: null, playlistIndex: index });
+    const video = index => ({ id: index === 3 || index === 28 ? 'duplicate-id' : `fixture-${index}`, kind: 'video', title: `Fixture video ${String(index).padStart(2, '0')}`, channel: 'Fixture Music', thumbnail: art, url: `https://www.youtube.com/watch?v=fixture${index}`, duration: 190 + index, viewCount: 10000 + index * 153, description: null, playlistIndex: index,
+      ...(index >= 119 && { heatmap: [{ startTime: 0, endTime: 50, value: 0.1 }, { startTime: 50, endTime: 100, value: 0.9 }, { startTime: 100, endTime: 190 + index, value: 0.35 }] }),
+    });
     const playlist = { id: 'PLfixture', kind: 'playlist', title: 'Evening listening', channel: 'Fixture listener', thumbnail: art, url: 'https://www.youtube.com/playlist?list=PLfixture', duration: null, viewCount: null, description: 'A quiet collection for the end of the day.' };
     const collection = { id: 'PLfixture', title: playlist.title, owner: playlist.channel, thumbnail: art, itemCount: 120, description: playlist.description, isMix: false, url: playlist.url };
     const MiB = 1024 ** 2;
@@ -55,7 +67,7 @@ try {
     let player = { status: 'idle', video: null, position: 0, duration: 0, volume: 80, muted: false, speed: 1, quality: 1080, requestedQuality: 1080, qualities: [1080, 720, 480], error: null, errorCode: null, bufferedSeconds: 30, loadId: 0, playbackMode: 'video' };
     let callbackId = 0; const callbacks = new Map(); const listeners = new Map();
     const state = { calls: [], bounds: null, context: null, emit: (event, payload) => { for (const [id, listener] of listeners) if (listener.event === event) callbacks.get(listener.handler)?.({ event, id, payload }); } };
-    state.endVideo = () => { player = {...player,status:'ended'}; state.emit('player-state',player); };
+    state.endVideo = () => { player = {...player,status:'ended',position:player.duration}; state.emit('player-state',player); };
     window.__fixture = state; state.cache = cacheData; state.session = session;
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: (_, id) => listeners.delete(id) };
     window.__TAURI_INTERNALS__ = {
@@ -66,7 +78,7 @@ try {
         state.calls.push({ command, args });
         if (command === 'plugin:event|listen') { const id = ++callbackId; listeners.set(id, args); return id; }
         if (command === 'plugin:event|unlisten') { listeners.delete(args.eventId); return; }
-        if (command === 'bootstrap') return { session, settings, downloads: [], history: [], tools: [] };
+        if (command === 'bootstrap') return { session, settings, downloads: [], history: [{ video: video(1), duration: video(1).duration, position: 52, updatedAt: Math.floor(Date.now() / 1000) }], tools: [] };
         if (command === 'session_state') return session;
         if (command === 'browse') {
           await new Promise(resolve => setTimeout(resolve, 35));
@@ -92,8 +104,8 @@ try {
         }
         if (command === 'cancel_comments') return;
         if (command === 'player_overlay_snapshot') return {revision:1,player,ui:{hasPrevious:false,hasNext:true,mini:false,theater:false,fullscreen:false},pausedIntent:player.status==='paused',overlayError:null};
-        if (command === 'player_state') { if (player.status === 'playing') player = { ...player, position: player.position + 1 }; return player; }
-        if (command === 'play_video') { player = { ...player, video: args.item, status: 'playing', loadId: player.loadId + 1, position: args.startSeconds ?? 30, duration: args.item.duration, playbackMode: args.playbackMode ?? player.playbackMode }; state.emit('player-state', player); return; }
+        if (command === 'player_state') return player;
+        if (command === 'play_video') { player = { ...player, video: args.item, status: 'playing', loadId: player.loadId + 1, position: 0, duration: args.item.duration, playbackMode: args.playbackMode ?? player.playbackMode }; state.emit('player-state', player); return; }
         if (command === 'player_overlay_action') { if(args.action==='adjust-volume') player={...player,volume:Math.max(0,Math.min(100,player.volume+args.value))}; state.emit('player-state',player); return; }
         if (command === 'player_action') { if (args.action === 'toggle') player = { ...player, status: player.status === 'playing' ? 'paused' : 'playing' }; else if (args.action === 'speed') player = { ...player, speed: args.value }; else if (args.action === 'stop') player = { ...player, status: 'idle', video: null }; state.emit('player-state', player); return; }
         if (command === 'set_playback_mode') { player = { ...player, playbackMode: args.mode }; state.emit('player-state', player); return; }
@@ -143,11 +155,40 @@ try {
   await page.getByRole('button',{name:/Fixture video 96 Fixture Music/}).click();await waitCount('playlist',6);await page.waitForFunction(()=>document.querySelectorAll('.queue-item').length===120);await page.waitForTimeout(160);
   check('Playback near loaded end obtains only the needed next page',await page.locator('.queue-item.current strong').textContent()==='Fixture video 96'&&(await calls('playlist')).length===6);
   await page.getByRole('button',{name:/Fixture video 120 Fixture Music/}).click();const countBefore=(await calls('playlist')).length;check('Last playlist item disables Next',await page.locator('.accessible-controls [aria-label="Next video"]').isDisabled());
+  check('Watch page omits the keyboard controls button', await page.getByRole('button', { name: 'Keyboard controls', exact: true }).count() === 0);
+  await page.locator('.watch-topline .back-button').focus();
+  await page.keyboard.press('Tab');
+  check('Tab reveals the accessible playback controls', await page.locator('.accessible-controls:focus-within').count() === 1);
+  await page.keyboard.press('Shift+Tab');
+  check('Accessible playback controls collapse when focus leaves', await page.locator('.accessible-controls').evaluate(element => element.getBoundingClientRect().height === 1));
   check('Exhausted playlist stops requesting pages',(await calls('playlist')).length===countBefore&&await page.locator('.queue-list .scroll-loader').count()===0);
+  await page.locator('.queue-list').getByRole('button',{name:/Fixture video 119 Fixture Music/}).click();
+  await page.getByRole('button',{name:'Listen with audio only',exact:true}).click();
+  await page.evaluate(()=>window.__fixture.endVideo());
+  await page.waitForFunction(()=>document.querySelector('.queue-item.current strong')?.textContent==='Fixture video 120');
+  const startsAtQueueEnd = await page.evaluate(()=>window.__fixture.calls.filter(call=>call.command==='play_video').length);
+  await page.evaluate(()=>window.__fixture.endVideo());
+  await page.locator('.full-player .player-surface').hover();
+  await page.getByRole('button',{name:'Play (Space)',exact:true}).waitFor();
+  check('Final audio item stops with replay available and no error',await page.locator('.player-error').count()===0&&await page.getByRole('button',{name:'Next video',exact:true}).isDisabled()&&await page.evaluate(()=>window.__fixture.calls.filter(call=>call.command==='play_video').length)===startsAtQueueEnd);
+  const audioSeek = page.getByRole('slider',{name:'Playback position'});
+  check('Audio progress shows the replay distribution and its accessible peak',await page.locator('.full-player .seek-heatmap').isVisible()&&await audioSeek.evaluate(el=>document.getElementById(el.getAttribute('aria-describedby'))?.textContent==='Most replayed around 1:15'));
+  await audioSeek.press('ArrowLeft');
+  check('Keyboard seeking still works with replay data',await page.evaluate(()=>window.__fixture.calls.some(call=>call.command==='player_action'&&call.args.action==='seek'&&call.args.value===309.9)));
   await page.getByRole('button',{name:'Back',exact:true}).click();await page.getByRole('heading',{name:'Evening listening',exact:true}).waitFor();
   check('Queue loading shares cached playlist pages without duplication',await page.locator('.playlist-row').count()===120&&(await calls('playlist')).length===6);
   await page.getByRole('button',{name:'Home',exact:true}).click();await page.getByRole('heading',{name:'Home',exact:true}).waitFor();
   check('Home loaded pages survive navigation without reload',await page.locator('.video-card').count()===72&&(await calls('home')).length===3);
+  await page.locator('.mini-player .player-surface').hover();
+  check('Floating audio player keeps its footer Expand player control',await page.getByRole('button',{name:'Expand player',exact:true}).isVisible()&&await page.locator('.mini-player .player-surface button[aria-label*="fullscreen" i]').count()===0);
+  const miniGraph = page.locator('.mini-player .seek-heatmap');
+  await miniGraph.waitFor({state:'visible'});
+  check('Floating audio player shows a compact replay heatmap',await miniGraph.evaluate(el=>el.getBoundingClientRect().height===19));
+  await page.getByRole('button',{name:'Move player to bottom bar',exact:true}).click();
+  const dockedGraph = page.locator('.bottom-player-progress .seek-heatmap');
+  await dockedGraph.waitFor({state:'visible'});
+  check('Docked player aligns the replay heatmap to its own progress bar',await dockedGraph.evaluate(el=>Math.abs(el.getBoundingClientRect().bottom-el.parentElement.querySelector('input').getBoundingClientRect().top)<0.5));
+  await page.getByRole('button',{name:'Restore floating mini player',exact:true}).click();
   await page.evaluate(()=>{document.activeElement?.blur();scrollTo(0,0);});await page.mouse.move(950,500);await page.mouse.wheel(0,600);await page.waitForTimeout(120);check('Root wheel scrolling works with no visible page scrollbar',await page.evaluate(()=>scrollY)>0);const yBeforePageUp=await page.evaluate(()=>scrollY);await page.keyboard.press('PageUp');await page.waitForTimeout(200);check('Root PageUp retains document scrolling',await page.evaluate(()=>scrollY)<yBeforePageUp);await page.keyboard.press('End');await page.waitForTimeout(200);check('Root End key reaches loaded page bottom',await page.evaluate(()=>scrollY+innerHeight>=document.documentElement.scrollHeight-2));await page.keyboard.press('Home');await page.waitForTimeout(200);check('Root Home key returns to top',await page.evaluate(()=>scrollY)<2);
   await page.evaluate(()=>scrollTo(0,600));await page.getByRole('button',{name:'Back to top',exact:true}).waitFor();
   const topBox=await page.locator('.back-to-top').boundingBox(),miniBox=await page.locator('.mini-player').boundingBox();
@@ -155,6 +196,12 @@ try {
   await page.evaluate(()=>scrollTo(0,300));await page.waitForTimeout(80);const savedY=await page.evaluate(()=>scrollY);await page.getByRole('button',{name:'Downloads',exact:true}).click();await page.getByRole('button',{name:'Home',exact:true}).click();await page.waitForTimeout(180);check('Saved Home scroll position survives navigation with hidden scrollbar',Math.abs((await page.evaluate(()=>scrollY))-savedY)<2);
   await page.locator('.sidebar-bottom').getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption('light');await page.waitForTimeout(50);check('Light theme retains hidden outer scrollbar',await page.locator('html').evaluate(el=>el.dataset.theme==='light'&&getComputedStyle(el).scrollbarWidth==='none'));await page.screenshot({path:path.join(output,'v017-browser-light-settings.png')});await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption('dark');await page.getByRole('button',{name:'Home',exact:true}).click();
   await page.screenshot({path:path.join(output,'v017-browser-scrolling-home.png')});
+  await page.getByRole('button',{name:'History',exact:true}).click();
+  await page.getByRole('button',{name:'Play Fixture video 01',exact:true}).click();
+  const historyPlay = await page.evaluate(()=>window.__fixture.calls.filter(call=>call.command==='play_video').at(-1).args);
+  check('History opens a fresh item even with a legacy saved position',historyPlay.item.id==='fixture-1'&&!('startSeconds' in historyPlay));
+  await page.locator('.full-player .seek-slider').waitFor({state:'attached'});
+  check('A video without replay data keeps the plain seek bar',await page.locator('.full-player .seek-slider').count()===1&&await page.locator('.full-player .seek-heatmap').count()===0);
   await scaledOverlayChecks(browser,output,check);
   check('No browser errors',errors.length===0,errors);
 } catch(error) {

@@ -1,6 +1,6 @@
 # Bundled tool notices and source locations
 
-TubeDesk redistributes these Windows x64 builds unchanged. Upstream license texts
+Viewsical redistributes these Windows x64 builds unchanged. Upstream license texts
 are alongside this file; the yt-dlp aggregate includes its bundled dependencies.
 
 ## yt-dlp 2026.10.26 and yt-dlp-ejs 0.8.0
@@ -30,6 +30,13 @@ are alongside this file; the yt-dlp aggregate includes its bundled dependencies.
 - Windows build recipes and dependency definitions: https://github.com/shinchiro/mpv-winbuild-cmake/tree/20261111
 - d3dcompiler_43.dll is redistributed unchanged from that same mpv archive.
 - See mpv-Copyright.txt, GPL-2.0.txt, and LGPL-2.1.txt for upstream licensing details.
+
+## libmpv 0.42.0 (official Windows LGPL build)
+
+- Release archive and published digest: https://github.com/mpv-player/mpv/releases/tag/v0.42.0
+- Corresponding source and build recipes: https://github.com/mpv-player/mpv/tree/v0.42.0
+- Source archive: https://github.com/mpv-player/mpv/archive/refs/tags/v0.42.0.tar.gz
+- See libmpv-LICENSE.LGPL. The player helper loads the unmodified DLL at runtime.
 
 ## FFmpeg and FFprobe 8.1.2-essentials
 

@@ -4275,7 +4275,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tubedesk"
-version = "0.1.7"
+version = "0.1.10"
 dependencies = [
  "rusqlite",
  "serde",
@@ -4294,6 +4294,7 @@ dependencies = [
  "uuid",
  "webview2-com",
  "windows 0.61.3",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

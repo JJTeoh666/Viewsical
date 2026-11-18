@@ -49,6 +49,16 @@ pub struct MediaItem {
     pub playlist_index: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub youtube_loudness_db: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heatmap: Option<Vec<ReplayHeatSegment>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayHeatSegment {
+    pub start_time: f64,
+    pub end_time: f64,
+    pub value: f64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -203,7 +213,6 @@ pub struct PlayerPresentation {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryItem {
     pub video: MediaItem,
-    pub position: f64,
     pub duration: f64,
     pub updated_at: u64,
 }

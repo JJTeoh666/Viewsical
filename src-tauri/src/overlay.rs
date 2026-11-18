@@ -11,9 +11,10 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 pub const LABEL: &str = "player-overlay";
 const OPEN_ERROR: &str = "Video controls couldn’t open. Use keyboard controls or retry.";
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Desired {
-    bounds: PlayerBounds,
+    bounds: Option<PlayerBounds>,
+    bounds_frame: Option<u64>,
     allowed: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +26,18 @@ struct Geometry {
     radius: i32,
     clip: ClipRect,
 }
+impl Geometry {
+    fn at_origin(mut self, origin: (i32, i32)) -> Self {
+        self.x = self.x.saturating_add(origin.0);
+        self.y = self.y.saturating_add(origin.1);
+        self
+    }
+}
+#[derive(Clone, Copy, Default)]
+struct Placement {
+    geometry: Option<Geometry>,
+    shown: bool,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Failure {
     Creation,
@@ -34,9 +47,9 @@ enum Failure {
 }
 #[derive(Default)]
 struct Inner {
-    desired: Option<Desired>,
-    applied: Option<Geometry>,
-    shown: bool,
+    desired: Desired,
+    video: Placement,
+    controls: Placement,
     ready: bool,
     handshake_seen: bool,
     creating: bool,
@@ -89,20 +102,16 @@ fn failed(app: &AppHandle, epoch: u64, cause: Failure) {
     }
 }
 
-/// May run on every state event; identical requests do not touch the native
-/// window. Creation is lazy and failure requires an explicit user retry.
-pub fn sync(app: &AppHandle, bounds: PlayerBounds, video_visible: bool) {
-    let manager = app.state::<OverlayManager>();
-    if manager.closing.load(Ordering::SeqCst) {
-        return;
-    }
-    let wanted = video_visible && bounds.visible && bounds.width > 1. && bounds.height > 1.;
-    let exists = app.get_webview_window(LABEL).is_some();
-    let (create, changed) = if let Ok(mut inner) = manager.inner.lock() {
-        let changed = inner.desired.as_ref().is_none_or(|previous| {
-            let old = &previous.bounds;
-            previous.allowed != video_visible
-                || old.x != bounds.x
+pub fn set_bounds(app: &AppHandle, bounds: PlayerBounds, frame: Option<u64>) {
+    sync(app, |desired| {
+        if let Some(frame) = frame {
+            if desired.bounds_frame.is_some_and(|latest| frame < latest) {
+                return false;
+            }
+            desired.bounds_frame = Some(frame);
+        }
+        let changed = desired.bounds.as_ref().is_none_or(|old| {
+            old.x != bounds.x
                 || old.y != bounds.y
                 || old.width != bounds.width
                 || old.height != bounds.height
@@ -110,10 +119,34 @@ pub fn sync(app: &AppHandle, bounds: PlayerBounds, video_visible: bool) {
                 || old.radius != bounds.radius
                 || old.viewport_top != bounds.viewport_top
         });
-        inner.desired = Some(Desired {
-            bounds,
-            allowed: video_visible,
-        });
+        desired.bounds = Some(bounds);
+        changed
+    });
+}
+
+pub fn set_video_visible(app: &AppHandle, allowed: bool) {
+    sync(app, |desired| {
+        let changed = desired.allowed != allowed;
+        desired.allowed = allowed;
+        changed
+    });
+}
+
+/// Bounds and playback visibility are updated independently so a playback
+/// notification cannot replace a newer scroll position.
+fn sync(app: &AppHandle, update: impl FnOnce(&mut Desired) -> bool) {
+    let manager = app.state::<OverlayManager>();
+    if manager.closing.load(Ordering::SeqCst) {
+        return;
+    }
+    let exists = app.get_webview_window(LABEL).is_some();
+    let (create, changed) = if let Ok(mut inner) = manager.inner.lock() {
+        let changed = update(&mut inner.desired);
+        let wanted =
+            inner.desired.allowed
+                && inner.desired.bounds.as_ref().is_some_and(|bounds| {
+                    bounds.visible && bounds.width > 1. && bounds.height > 1.
+                });
         if wanted && inner.error.is_none() && !inner.creating && !exists {
             inner.creating = true;
             inner.ready = false;
@@ -330,7 +363,7 @@ fn allowed_url(url: &url::Url, dev: Option<&url::Url>) -> bool {
             .any(|(key, value)| key == "player-overlay" && value == "1")
 }
 
-fn schedule(app: &AppHandle) {
+pub(crate) fn schedule(app: &AppHandle) {
     let manager = app.state::<OverlayManager>();
     if manager.closing.load(Ordering::SeqCst) || manager.pending.swap(true, Ordering::SeqCst) {
         return;
@@ -358,18 +391,21 @@ fn desired_geometry(
     client: (i32, i32),
 ) -> Option<Geometry> {
     let clip = visible_clip(bounds, client)?;
-    Some(Geometry {
-        x: origin.0.saturating_add(bounds.x.round() as i32),
-        y: origin.1.saturating_add(bounds.y.round() as i32),
-        width: bounds.width.round() as i32,
-        height: bounds.height.round() as i32,
-        radius: bounds
-            .radius
-            .unwrap_or(0.)
-            .clamp(0., bounds.width.min(bounds.height) / 2.)
-            .round() as i32,
-        clip,
-    })
+    Some(
+        Geometry {
+            x: bounds.x.round() as i32,
+            y: bounds.y.round() as i32,
+            width: bounds.width.round() as i32,
+            height: bounds.height.round() as i32,
+            radius: bounds
+                .radius
+                .unwrap_or(0.)
+                .clamp(0., bounds.width.min(bounds.height) / 2.)
+                .round() as i32,
+            clip,
+        }
+        .at_origin(origin),
+    )
 }
 
 #[cfg(windows)]
@@ -380,97 +416,173 @@ fn apply(app: &AppHandle) {
         UI::WindowsAndMessaging::*,
     };
     let manager = app.state::<OverlayManager>();
-    let Some(window) = app.get_webview_window(LABEL) else {
-        return;
-    };
     let Some(main) = app.get_webview_window("main") else {
         return;
     };
-    let (Ok(hwnd), Ok(owner)) = (window.hwnd(), main.hwnd()) else {
+    let Ok(owner) = main.hwnd() else {
         return;
     };
     // Tauri exposes windows0.62 handles; only raw HWNDs cross to our0.61 API.
-    let (hwnd, owner) = (HWND(hwnd.0), HWND(owner.0));
-    let (desired, ready, last, was_shown) = {
+    let owner = HWND(owner.0);
+    let controls_window = app
+        .get_webview_window(LABEL)
+        .and_then(|window| window.hwnd().ok())
+        .map(|hwnd| HWND(hwnd.0));
+    let video_window = app
+        .try_state::<AppState>()
+        .and_then(|state| state.player.native_surface());
+    let (desired, ready, last_video, last_controls) = {
         let inner = manager.inner.lock().unwrap_or_else(|p| p.into_inner());
         (
             inner.desired.clone(),
             inner.ready && inner.error.is_none(),
-            inner.applied,
-            inner.shown,
+            inner.video,
+            inner.controls,
         )
     };
     let mut rect = RECT::default();
-    let mut origin = POINT::default();
-    let (geometry, active_owner) = unsafe {
-        let foreground = GetForegroundWindow();
-        let active = foreground == owner || foreground == hwnd;
-        let geometry = if !manager.closing.load(Ordering::SeqCst)
+    let (video, controls) = unsafe {
+        let geometry = if desired.allowed
+            && !manager.closing.load(Ordering::SeqCst)
             && IsWindowVisible(owner).as_bool()
             && !IsIconic(owner).as_bool()
             && GetClientRect(owner, &mut rect).is_ok()
-            && ClientToScreen(owner, &mut origin).as_bool()
         {
-            desired.as_ref().filter(|d| d.allowed).and_then(|d| {
+            desired.bounds.as_ref().and_then(|bounds| {
                 desired_geometry(
-                    &d.bounds,
-                    (origin.x, origin.y),
+                    bounds,
+                    (0, 0),
                     (rect.right - rect.left, rect.bottom - rect.top),
                 )
             })
         } else {
             None
         };
-        (geometry, active)
+        let video = video_window.map_or(Placement::default(), |(handle, player_pid)| {
+            let hwnd = HWND(handle as *mut _);
+            disable_mpv_input(hwnd, player_pid);
+            place_window(hwnd, geometry, geometry.is_some(), last_video)
+        });
+        let controls = controls_window.map_or(Placement::default(), |hwnd| {
+            let mut origin = POINT::default();
+            let geometry = geometry
+                .filter(|_| ClientToScreen(owner, &mut origin).as_bool())
+                .map(|value| value.at_origin((origin.x, origin.y)));
+            let foreground = GetForegroundWindow();
+            let shown = geometry.is_some() && ready && (foreground == owner || foreground == hwnd);
+            // Even while hidden, give the initializing WebView its real viewport.
+            place_window(hwnd, geometry, shown, last_controls)
+        });
+        (video, controls)
     };
-    let shown = geometry.is_some() && ready && active_owner;
-    unsafe {
-        if let Some(geometry) = geometry {
-            let resized = last.is_none_or(|old| {
-                old.width != geometry.width
-                    || old.height != geometry.height
-                    || old.radius != geometry.radius
-                    || old.clip != geometry.clip
-            });
-            if resized {
-                crate::player_geometry::apply_region(
-                    hwnd,
-                    geometry.width,
-                    geometry.height,
-                    geometry.radius,
-                    geometry.clip,
-                );
-            }
-            // Size the hidden WebView immediately so initialization has a real
-            // viewport. It must not expose an empty document while loading.
-            if was_shown != shown || last != Some(geometry) {
-                let flags = SWP_NOACTIVATE
-                    | if shown {
-                        SWP_SHOWWINDOW
-                    } else {
-                        SWP_HIDEWINDOW | SWP_NOZORDER
-                    };
-                let _ = SetWindowPos(
-                    hwnd,
-                    Some(HWND_TOP),
-                    geometry.x,
-                    geometry.y,
-                    geometry.width,
-                    geometry.height,
-                    flags,
-                );
-            }
-        } else if was_shown {
-            let _ = ShowWindow(hwnd, SW_HIDE);
-        }
-    }
-    if was_shown != shown {
-        tracing::info!(visible = shown, "Player overlay visibility changed");
+    if last_controls.shown != controls.shown {
+        tracing::info!(
+            visible = controls.shown,
+            "Player overlay visibility changed"
+        );
     }
     if let Ok(mut inner) = manager.inner.lock() {
-        inner.applied = geometry.or(last);
-        inner.shown = shown;
+        inner.video = video;
+        inner.controls = controls;
     };
+}
+
+#[cfg(windows)]
+unsafe fn disable_mpv_input(hwnd: windows::Win32::Foundation::HWND, player_pid: Option<u32>) {
+    use windows::Win32::UI::{
+        Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled},
+        WindowsAndMessaging::*,
+    };
+    let (Some(expected), Ok(child)) = (player_pid, GetWindow(hwnd, GW_CHILD)) else {
+        return;
+    };
+    if IsWindowEnabled(child).as_bool() {
+        let mut actual = 0;
+        GetWindowThreadProcessId(child, Some(&mut actual));
+        if actual == expected {
+            // Pointer and keyboard input belong to the controls WebView.
+            let _ = EnableWindow(child, false);
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe fn place_window(
+    hwnd: windows::Win32::Foundation::HWND,
+    geometry: Option<Geometry>,
+    shown: bool,
+    previous: Placement,
+) -> Placement {
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    let Some(geometry) = geometry else {
+        if previous.shown {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+        return Placement {
+            shown: false,
+            ..previous
+        };
+    };
+    let moved = previous
+        .geometry
+        .is_none_or(|old| old.x != geometry.x || old.y != geometry.y);
+    let resized = previous
+        .geometry
+        .is_none_or(|old| old.width != geometry.width || old.height != geometry.height);
+    let region_changed = resized
+        || previous
+            .geometry
+            .is_none_or(|old| old.radius != geometry.radius || old.clip != geometry.clip);
+    let visibility_changed = previous.shown != shown;
+    if region_changed {
+        // Let the position change handle redrawing when the clip and position
+        // move together. There is no need to repaint the old position first.
+        crate::player_geometry::apply_region(
+            hwnd,
+            geometry.width,
+            geometry.height,
+            geometry.radius,
+            geometry.clip,
+            shown && !(moved || resized || visibility_changed),
+        );
+    }
+    if moved || resized || visibility_changed {
+        let mut flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+        if !resized {
+            flags |= SWP_NOSIZE;
+        }
+        if !moved {
+            flags |= SWP_NOMOVE;
+        }
+        flags |= if !visibility_changed {
+            SWP_NOZORDER
+        } else if shown {
+            SWP_SHOWWINDOW
+        } else {
+            SWP_HIDEWINDOW | SWP_NOZORDER
+        };
+        if moved && !resized && !visibility_changed {
+            // A scroll translates the existing surface and preserves its client size.
+            flags |= SWP_NOSENDCHANGING | SWP_DEFERERASE;
+        }
+        if SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height,
+            flags,
+        )
+        .is_err()
+        {
+            return previous;
+        }
+    }
+    Placement {
+        geometry: Some(geometry),
+        shown,
+    }
 }
 
 #[cfg(not(windows))]
@@ -539,7 +651,7 @@ pub async fn retry(app: &AppHandle) -> AppResult<()> {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
-    let desired = {
+    {
         let mut inner = manager.inner.lock().map_err(AppError::io)?;
         inner.epoch += 1;
         inner.error = None;
@@ -547,14 +659,10 @@ pub async fn retry(app: &AppHandle) -> AppResult<()> {
         inner.ready = false;
         inner.handshake_seen = false;
         inner.creating = false;
-        inner.applied = None;
-        inner.shown = false;
-        inner.desired.clone()
-    };
-    publish(app);
-    if let Some(desired) = desired {
-        sync(app, desired.bounds, desired.allowed);
+        inner.controls = Placement::default();
     }
+    publish(app);
+    sync(app, |_| false);
     Ok(())
 }
 

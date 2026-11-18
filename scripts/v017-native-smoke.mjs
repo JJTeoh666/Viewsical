@@ -30,7 +30,7 @@ try{
  }
  await mkdir(join(data,'media-cache'),{recursive:true});const entries=[];for(const [mode,suffix,source] of [['video','v.mkv','video.mkv'],['audio','a.mka','audio.mka']]){const id=randomUUID(),file=`${id}-${suffix}`;try{await link(join(root,'.tools/v016-fixture',source),join(data,'media-cache',file));}catch{await copyFile(join(root,'.tools/v016-fixture',source),join(data,'media-cache',file));}entries.push({id,video:item,mode,quality:mode==='video'?1080:0,qualities:[1080],file,bytes:(await stat(join(root,'.tools/v016-fixture',source))).size,duration:120,lastAccessed:Math.floor(Date.now()/1000),account:false,retired:false});}await writeFile(join(data,'media-cache/index.json'),JSON.stringify({enabled:true,maxBytes:512*1024*1024,entries}));
  const vite=spawn(process.execPath,[join(root,'node_modules/vite/bin/vite.js'),'preview','--host','127.0.0.1','--port','1420','--strictPort'],{cwd:root,windowsHide:true,stdio:'ignore'});children.push(vite);await until(async()=>(await fetch('http://127.0.0.1:1420')).ok,'Vite');
- app=spawn(process.env.VIEWSICAL_TEST_EXECUTABLE||join(root,'src-tauri/target/debug/tubedesk.exe'),[],{cwd:root,windowsHide:false,env:{...process.env,TUBEDESK_DATA_DIR:data,WEBVIEW2_USER_DATA_FOLDER:profile,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:`--remote-debugging-port=${port}`},stdio:'ignore'});children.push(app);
+ app=spawn(process.env.VIEWSICAL_TEST_EXECUTABLE||join(process.env.CARGO_TARGET_DIR||join(root,'src-tauri/target'),'debug/tubedesk.exe'),[],{cwd:root,windowsHide:false,env:{...process.env,TUBEDESK_VIDEO_RENDERER:'native',TUBEDESK_DATA_DIR:data,WEBVIEW2_USER_DATA_FOLDER:profile,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:`--remote-debugging-port=${port}`},stdio:'ignore'});children.push(app);
  await until(async()=>{if(app.exitCode!==null)throw Object.assign(Error('Test app exited '+app.exitCode),{fatal:true});return(await fetch(`http://127.0.0.1:${port}/json/version`,{signal:AbortSignal.timeout(700)})).ok;},'app CDP');browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);page=await until(()=>browser.contexts().flatMap(c=>c.pages()).find(p=>(p.url().includes('1420')||p.url().includes('tauri.localhost')||p.url().startsWith('tauri:'))&&!p.url().includes('player-overlay')),'main page');await page.waitForSelector('#search');
  const memoryBefore=await webviewMemory(); const boot=await ipc('bootstrap');await ipc('save_settings',{settings:{...boot.settings,theme:'dark',volume:37,muted:false}});await ipc('play_video',{item,quality:1080,startSeconds:0,playbackMode:'video'});await playing();await ipc('player_action',{action:'pause'});await page.getByRole('button',{name:'Return to player',exact:true}).click();overlay=await until(()=>browser.contexts().flatMap(c=>c.pages()).find(p=>p.url().includes('player-overlay=1')),'owned overlay page');await overlay.waitForSelector('.player-overlay-root');await writeFile(join(root,'.tools/v017-current.json'),JSON.stringify({pid:app.pid,port,data,profile},null,2));console.log('NATIVE_WINDOW_READY '+app.pid);console.log('OVERLAY_META',await overlay.evaluate(()=>window.__TAURI_INTERNALS__.metadata));await until(()=>ipc('plugin:window|is_visible',{label:'player-overlay'}),'overlay shown',120000);
  const memoryAfter=await webviewMemory();pass('additional reusable overlay WebView working-set observation',{before:memoryBefore,after:memoryAfter,addedMiB:(memoryAfter.bytes-memoryBefore.bytes)/1048576}); const command=await native(),get=async name=>{console.log('MPV_PROPERTY '+name);return command(['get_property',name]);};assert.equal(await get('volume-gain'),-6);assert((await get('audio-out-params'))?.format);pass('real 1080p mpv playback uses shared web overlay without Lua rendering');
@@ -44,6 +44,27 @@ try{
  assert.equal((await ipc('player_state')).loadId,beforeRetry.loadId);assert.equal(await get('volume-gain'),-6);
  assert.equal(browser.contexts().flatMap(c=>c.pages()).filter(p=>p.url().includes('player-overlay=1')).length,1);
  pass('Retry controls replaces one overlay without restarting playback or normalization');
+ for (const mode of ['video','audio']) {
+  await ipc('play_video',{item,quality:1080,playbackMode:mode});
+  const opened=await playing();
+  assert.equal(opened.playbackMode,mode);
+  assert(opened.position<2,'opening a previously played item starts at the beginning');
+  await ipc('player_action',{action:'seek',value:opened.duration-0.8});
+  await until(async()=>{
+   const state=await ipc('player_state');
+   if(state.status==='failed')throw Object.assign(Error(state.error),{fatal:true});
+   return state.status==='ended';
+  },`natural ${mode} end`);
+  await delay(4200);
+  const ended=await ipc('player_state');
+  assert.equal(ended.status,'ended');
+  assert.equal(ended.error,null);
+  assert.equal(ended.loadId,opened.loadId);
+  assert.equal(await page.locator('.player-error').count(),0);
+  await ipc('player_action',{action:'toggle'});
+  assert((await playing()).position<2,'replay begins at zero');
+  pass(`Native ${mode} ends cleanly and replays from the beginning`);
+ }
  if(process.env.VIEWSICAL_TEST_HOLD==='1')await until(async()=>{const {existsSync}=await import('node:fs');return existsSync(join(root,'.tools/v017-finish-hold'));},'manual visual checks',300000);
  const owned=(await webviewMemory()).ownedPids;
  pipe?.end();await ipc('plugin:window|close',{label:'main'});await until(()=>app.exitCode!==null,'clean shutdown',15000);assert.equal(app.exitCode,0);

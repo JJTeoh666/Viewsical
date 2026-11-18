@@ -9,7 +9,13 @@ mod player_geometry;
 mod runtime;
 mod session;
 mod store;
+#[cfg(windows)]
+mod video_renderer;
+#[cfg(windows)]
+#[doc(hidden)]
+pub use video_renderer::run_video_renderer;
 mod window_state;
+mod video_surface;
 mod youtube;
 
 use downloads::DownloadManager;
@@ -81,7 +87,7 @@ fn request_shutdown(handle: &tauri::AppHandle) {
         let cleanup = async {
             tokio::join!(
                 state.downloads.shutdown(),
-                state.player.shutdown(),
+                state.player.shutdown(&handle),
                 state.cache.shutdown()
             );
             if let Err(error) = state.sessions.shutdown(&handle).await {
@@ -223,6 +229,7 @@ pub fn run() {
         .manage(ShutdownSignals::default())
         .manage(window_state::MainWindowState::default())
         .manage(overlay::OverlayManager::default())
+        .manage(video_surface::VideoSurface::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle=app.handle().clone();
@@ -285,6 +292,7 @@ pub fn run() {
             comments::video_comments,comments::cancel_comments,
             media_cache::cache_summary,media_cache::cache_configure,media_cache::cache_clear,
             player::set_playback_mode,player::player_ui_context,player::play_video,player::play_local,player::player_action,player::player_bounds,player::player_state,player::player_overlay_snapshot,player::player_overlay_action,player::retry_player_overlay,
+            video_surface::video_renderer_mode, video_surface::video_surface_configure, video_surface::video_surface_release, video_surface::video_surface_failed,
             downloads::enqueue_download,downloads::download_action])
         .build(tauri::generate_context!()).expect("Could not start Viewsical");
     app.run(move |handle, event| {

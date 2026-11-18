@@ -22,6 +22,8 @@ describe('player keyboard shortcut scope', () => {
   it('routes fullscreen Escape and control focus only in the intended contexts', () => {
     expect(playerShortcut({ key: 'Escape' }, normal)).toBeNull();
     expect(playerShortcut({ key: 'Escape' }, { ...normal, fullscreen: true })).toEqual({ action: 'fullscreen' });
+    expect(playerShortcut({ key: 'Escape' }, { ...normal, fullscreen: true, button: true })).toEqual({ action: 'fullscreen' });
+    expect(playerShortcut({ key: 'Escape' }, { ...normal, fullscreen: true, menu: true })).toBeNull();
     expect(playerShortcut({ key: 'k', ctrlKey: true }, normal)).toEqual({ action: 'focus-controls' });
   });
 });

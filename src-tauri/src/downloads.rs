@@ -444,6 +444,9 @@ impl DownloadManager {
             if info["id"].as_str() == Some(task.video.id.as_str()) {
                 task.video.youtube_loudness_db =
                     crate::normalization::valid_loudness(info["viewsical_loudness_db"].as_f64());
+                if let Some(heatmap) = crate::youtube::replay_heatmap(&info) {
+                    task.video.heatmap = Some(heatmap);
+                }
             }
             if task.mode == "video" {
                 if let Some(height) = info["height"]

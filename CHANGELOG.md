@@ -1,5 +1,24 @@
 # Changelog
 
+## Viewsical 0.1.10 — 18 November 2026
+
+- Wait for Viewsical and its playback helper to exit during an install or uninstall.
+- Document how to keep the existing installation and app data when upgrading.
+
+## Viewsical 0.1.9 — 18 November 2026
+
+- Scroll video and playback controls together in the main window. If the renderer fails, the compatibility player resumes the current item.
+- Draw YouTube’s Most replayed graph on the video and audio seek bars when the data is available.
+- Remove the Keyboard controls button beneath the video. Press Tab to reach the playback controls.
+- Document how to run and test the desktop app before packaging.
+
+## Viewsical 0.1.8 — 18 November 2026
+
+- Reduce playback polling and redundant control updates.
+- Remove the upper fullscreen button from the floating miniplayer and retain the footer's Expand player control.
+- Open audio and video from the beginning and clear saved positions while retaining watch history.
+- Stop cleanly at the end of the queue with replay and seeking available.
+
 ## Viewsical 0.1.7 — 18 November 2026
 
 - Share React playback controls, Lucide icons and translucent menus between video and audio modes. Reuse one transparent controls WebView above the native player.

@@ -9,7 +9,7 @@ pub(crate) struct ClipRect {
 }
 
 /// Window-local clipping shared by mpv's child and the owned controls window.
-/// Window size/position stay unchanged, so scrolling never rescales the video.
+/// The original video size is preserved while its position follows the page.
 pub(crate) fn visible_clip(bounds: &PlayerBounds, client: (i32, i32)) -> Option<ClipRect> {
     if !bounds.visible
         || ![
@@ -51,6 +51,7 @@ pub(crate) unsafe fn apply_region(
     height: i32,
     radius: i32,
     clip: ClipRect,
+    redraw: bool,
 ) {
     use windows::Win32::Graphics::Gdi::*;
     let rounded = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
@@ -66,7 +67,7 @@ pub(crate) unsafe fn apply_region(
     }
     let combined = CombineRgn(Some(rounded), Some(rounded), Some(viewport), RGN_AND).0 != 0;
     let _ = DeleteObject(HGDIOBJ(viewport.0));
-    if !combined || SetWindowRgn(hwnd, Some(rounded), true) == 0 {
+    if !combined || SetWindowRgn(hwnd, Some(rounded), redraw) == 0 {
         let _ = DeleteObject(HGDIOBJ(rounded.0));
     }
 }

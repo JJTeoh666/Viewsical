@@ -68,6 +68,23 @@ if ($Force -or !(Matches (Join-Path $mpvExtract 'mpv.exe') $mpvBinaryHash) -or !
 CopyVerified (Join-Path $mpvExtract 'mpv.exe') (Join-Path $toolRoot 'mpv.exe') $mpvBinaryHash
 CopyVerified (Join-Path $mpvExtract 'd3dcompiler_43.dll') (Join-Path $toolRoot 'd3dcompiler_43.dll') $mpvDllHash
 
+$libmpvVersion = '0.42.0'
+$libmpvName = "libmpv-v$libmpvVersion-x86_64-w64-mingw32-lgpl.zip"
+$libmpvUrl = "https://github.com/mpv-player/mpv/releases/download/v$libmpvVersion/$libmpvName"
+$libmpvArchiveHash = '8e5f77430efc53ef175804ba6618527e3af0448a0dcabf04d3cc72659d1a6fce'
+$libmpvBinaryHash = '94fb87247732c59915cd59808bc582e843a71c22214b7b6c1e5563aa8149cef4'
+$libmpvArchive = Fetch $libmpvUrl $libmpvName
+Verify $libmpvArchive $libmpvArchiveHash
+$libmpvExtract = Join-Path $cacheRoot "libmpv-$libmpvVersion"
+$libmpvBinary = Join-Path $libmpvExtract 'libmpv-2.dll'
+$libmpvNotice = Join-Path $libmpvExtract 'LICENSE.LGPL'
+if ($Force -or !(Matches $libmpvBinary $libmpvBinaryHash) -or !(Test-Path -LiteralPath $libmpvNotice)) {
+    New-Item -ItemType Directory -Path $libmpvExtract -Force | Out-Null
+    Expand-Archive -LiteralPath $libmpvArchive -DestinationPath $libmpvExtract -Force
+}
+CopyVerified $libmpvBinary (Join-Path $toolRoot 'libmpv-2.dll') $libmpvBinaryHash
+CopyNotice $libmpvNotice 'libmpv-LICENSE.LGPL'
+
 # The matching static FFmpeg build avoids requiring a system installation.
 $ffmpegUrl = 'https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.7z'
 $ffmpegArchive = Fetch $ffmpegUrl 'ffmpeg-8.1.2.7z'
@@ -135,6 +152,13 @@ are alongside this file; the yt-dlp aggregate includes its bundled dependencies.
 - d3dcompiler_43.dll is redistributed unchanged from that same mpv archive.
 - See mpv-Copyright.txt, GPL-2.0.txt, and LGPL-2.1.txt for upstream licensing details.
 
+## libmpv 0.42.0 (official Windows LGPL build)
+
+- Release archive and published digest: https://github.com/mpv-player/mpv/releases/tag/v0.42.0
+- Corresponding source and build recipes: https://github.com/mpv-player/mpv/tree/v0.42.0
+- Source archive: https://github.com/mpv-player/mpv/archive/refs/tags/v0.42.0.tar.gz
+- See libmpv-LICENSE.LGPL. The player helper loads the unmodified DLL at runtime.
+
 ## FFmpeg and FFprobe 8.1.2-essentials
 
 - Binary archive: https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.7z
@@ -161,6 +185,7 @@ $manifest = @(
     @{ name='yt-dlp'; version=$ytVersion; source=$ytUrl; file='yt-dlp.exe'; archiveSha256=(Get-FileHash $ytFile).Hash.ToLowerInvariant() },
     @{ name='Deno'; version=$denoVersion; source=$denoUrl; file='deno.exe'; archiveSha256=(Get-FileHash $denoZip).Hash.ToLowerInvariant() },
     @{ name='mpv'; version='20261111-git-bcde6b93cc'; source=$mpvUrl; file='mpv.exe'; archiveSha256=(Get-FileHash $mpvArchive).Hash.ToLowerInvariant() },
+    @{ name='libmpv'; version=$libmpvVersion; source=$libmpvUrl; file='libmpv-2.dll'; archiveSha256=$libmpvArchiveHash },
     @{ name='FFmpeg'; version='8.1.2-essentials'; source=$ffmpegUrl; file='ffmpeg.exe'; archiveSha256=(Get-FileHash $ffmpegArchive).Hash.ToLowerInvariant() },
     @{ name='FFprobe'; version='8.1.2-essentials'; source=$ffmpegUrl; file='ffprobe.exe'; archiveSha256=(Get-FileHash $ffmpegArchive).Hash.ToLowerInvariant() },
     @{ name='mpv Direct3D compiler helper'; version='20261111-git-bcde6b93cc'; source=$mpvUrl; file='d3dcompiler_43.dll'; archiveSha256=(Get-FileHash $mpvArchive).Hash.ToLowerInvariant() }

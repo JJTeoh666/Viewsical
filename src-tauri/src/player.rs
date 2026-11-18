@@ -5,7 +5,7 @@ use crate::{
     runtime::ToolPaths,
     store::Store,
     youtube::PlaybackPlan,
-    AppState,
+    video_surface, AppState,
 };
 use serde_json::{json, Value};
 use std::{
@@ -140,6 +140,9 @@ impl EntryTracker {
             self.active = explicit;
         }
         let entry = explicit.or(self.active);
+        if kind == "end-file" && entry == self.active {
+            self.active = None;
+        }
         if let Some(token) = entry.and_then(|id| self.map.get(&id)).copied() {
             return (token == current).then_some(value);
         }
@@ -248,7 +251,6 @@ pub struct PlayerManager {
     control_updates: AsyncMutex<()>,
     presentation_revision: Mutex<u64>,
     surface: Mutex<Option<isize>>,
-    bounds: Mutex<PlayerBounds>,
     serial: AtomicU64,
     load: AtomicU64,
     attempt: AtomicU64,
@@ -297,15 +299,6 @@ impl PlayerManager {
             control_updates: AsyncMutex::new(()),
             presentation_revision: Mutex::new(0),
             surface: Mutex::new(None),
-            bounds: Mutex::new(PlayerBounds {
-                x: 0.,
-                y: 0.,
-                width: 640.,
-                height: 360.,
-                visible: false,
-                radius: None,
-                viewport_top: 0.,
-            }),
             serial: AtomicU64::new(1),
             load: AtomicU64::new(0),
             attempt: AtomicU64::new(0),
@@ -335,8 +328,20 @@ impl PlayerManager {
     fn publish(&self, app: &AppHandle) {
         let _ = app.emit_to("main", "player-state", self.snapshot());
         self.publish_presentation(app);
-        if let Ok(bounds) = self.bounds.lock() {
-            crate::overlay::sync(app, bounds.clone(), self.video_visible());
+        let visible = self.video_visible();
+        let canvas = video_surface::is_canvas(app);
+        video_surface::source_changed(app, self.snapshot().load_id, visible);
+        crate::overlay::set_video_visible(app, visible && !canvas);
+    }
+    fn publish_progress(&self, app: &AppHandle) {
+        let state = self.snapshot();
+        let _ = app.emit_to("main", "player-state", &state);
+        if state.playback_mode == "video" && app.get_webview_window("player-overlay").is_some() {
+            let _ = app.emit_to(
+                "player-overlay",
+                "player-presentation",
+                self.presentation(app),
+            );
         }
     }
     pub fn presentation(&self, app: &AppHandle) -> PlayerPresentation {
@@ -361,14 +366,15 @@ impl PlayerManager {
         }
     }
     fn video_visible(&self) -> bool {
-        let state = self.snapshot();
-        state.video.is_some()
-            && state.playback_mode == "video"
-            && matches!(
-                state.status.as_str(),
-                "preparing" | "buffering" | "playing" | "paused" | "ended"
-            )
-            && !self.closing.load(Ordering::SeqCst)
+        !self.closing.load(Ordering::SeqCst)
+            && self.state.lock().is_ok_and(|state| {
+                state.video.is_some()
+                    && state.playback_mode == "video"
+                    && matches!(
+                        state.status.as_str(),
+                        "preparing" | "buffering" | "playing" | "paused" | "ended"
+                    )
+            })
     }
     fn change(&self, app: &AppHandle, update: impl FnOnce(&mut PlayerState)) {
         if let Ok(mut s) = self.state.lock() {
@@ -377,11 +383,15 @@ impl PlayerManager {
         self.publish(app);
     }
     fn fail(self: &Arc<Self>, app: &AppHandle, error: &AppError) {
-        self.change(app, |s| {
+        if let Ok(mut s) = self.state.lock() {
+            if s.status == "ended" {
+                return;
+            }
             s.status = "failed".into();
             s.error = Some(error.message.clone());
             s.error_code = Some(error.code.clone());
-        });
+        }
+        self.publish(app);
         tracing::warn!(load_id=self.load.load(Ordering::SeqCst),category=%error.code,"Playback operation failed");
         let manager = self.clone();
         let token = self.token();
@@ -402,9 +412,7 @@ impl PlayerManager {
     fn save_history(&self) {
         let state = self.snapshot();
         if let Some(video) = state.video {
-            let _ = self
-                .store
-                .record_history(&video, state.position, state.duration);
+            let _ = self.store.record_history(&video, state.duration);
         }
     }
     fn token(&self) -> SourceToken {
@@ -430,7 +438,6 @@ impl PlayerManager {
         app: &AppHandle,
         item: MediaItem,
         quality: u32,
-        start: Option<f64>,
         mode: Option<String>,
     ) -> AppResult<()> {
         validate_quality(quality)?;
@@ -474,7 +481,7 @@ impl PlayerManager {
             self.change(app, |s| {
                 s.status = "resolving".into();
                 s.video = Some(item.clone());
-                s.position = valid_start(start.unwrap_or(0.));
+                s.position = 0.;
                 s.duration = item.duration.unwrap_or(0.);
                 s.qualities.clear();
                 s.error = None;
@@ -495,7 +502,7 @@ impl PlayerManager {
                 prefer_hls: false,
             });
         }
-        let result = self.open_remote(app, &item, quality, start, options).await;
+        let result = self.open_remote(app, &item, quality, 0., options).await;
         if let Err(ref error) = result {
             if self.load.load(Ordering::SeqCst) == load && error.code != "cancelled" {
                 self.fail(app, error);
@@ -508,7 +515,7 @@ impl PlayerManager {
         app: &AppHandle,
         item: &MediaItem,
         quality: u32,
-        start: Option<f64>,
+        start: f64,
         options: LoadOptions,
     ) -> AppResult<()> {
         self.check_load(app, &options)?;
@@ -528,6 +535,8 @@ impl PlayerManager {
             })
             .max_by_key(|d| (d.mode == options.mode, d.quality));
         if let Some(cached) = cached {
+            let mut item = item.clone();
+            item.heatmap = cached.video.heatmap.or(item.heatmap);
             let source = LocalSource {
                 path: cached.output_path.unwrap_or_default(),
                 quality: cached.quality,
@@ -535,7 +544,7 @@ impl PlayerManager {
                 loudness_db: cached.video.youtube_loudness_db,
             };
             return self
-                .open_local_source(app, source, item.clone(), start, options)
+                .open_local_source(app, source, item, start, options)
                 .await;
         }
         if !options.force_refresh {
@@ -555,8 +564,7 @@ impl PlayerManager {
                 if options.fresh_preferences {
                     self.apply_fresh_preferences(app).await?;
                 }
-                let position = valid_start(start.unwrap_or_else(|| self.saved_position(item)));
-                let result = self.load_plan(app, cached.plan, position, &options).await;
+                let result = self.load_plan(app, cached.plan, start, &options).await;
                 if result.is_ok() {
                     self.install_cache_lease(Some(cached.lease));
                 }
@@ -588,17 +596,7 @@ impl PlayerManager {
         if let Ok(mut local) = self.local_path.lock() {
             *local = None;
         }
-        let position = valid_start(start.unwrap_or_else(|| self.saved_position(item)));
-        self.load_plan(app, plan, position, &options).await
-    }
-    fn saved_position(&self, item: &MediaItem) -> f64 {
-        self.store
-            .history()
-            .ok()
-            .and_then(|h| h.into_iter().find(|h| h.video.id == item.id))
-            .filter(|h| h.duration <= 0. || h.position < h.duration - 8.)
-            .map(|h| h.position)
-            .unwrap_or(0.)
+        self.load_plan(app, plan, start, &options).await
     }
     async fn apply_fresh_preferences(&self, app: &AppHandle) -> AppResult<()> {
         let settings = self.store.settings()?;
@@ -632,7 +630,7 @@ impl PlayerManager {
     async fn load_plan(
         self: &Arc<Self>,
         app: &AppHandle,
-        plan: PlaybackPlan,
+        mut plan: PlaybackPlan,
         start: f64,
         options: &LoadOptions,
     ) -> AppResult<()> {
@@ -641,6 +639,15 @@ impl PlayerManager {
                 "session_changed",
                 "Your YouTube session changed. Select the video again.",
             ));
+        }
+        if plan.video.heatmap.is_none() {
+            plan.video.heatmap = self.state.lock().ok().and_then(|state| {
+                state
+                    .video
+                    .as_ref()
+                    .filter(|item| item.id == plan.video.id)
+                    .and_then(|item| item.heatmap.clone())
+            });
         }
         let network = plan.protocol != "cache";
         let warming = network.then(|| plan.clone());
@@ -712,7 +719,7 @@ impl PlayerManager {
         app: &AppHandle,
         source: LocalSource,
         mut item: MediaItem,
-        start: Option<f64>,
+        position: f64,
         options: LoadOptions,
     ) -> AppResult<()> {
         self.ensure_engine(app).await?;
@@ -722,7 +729,6 @@ impl PlayerManager {
             self.apply_fresh_preferences(app).await?;
             self.check_load(app, &options)?;
         }
-        let position = valid_start(start.unwrap_or_else(|| self.saved_position(&item)));
         item.youtube_loudness_db = source.loudness_db;
         let mut file_options = source_options(
             position,
@@ -820,8 +826,10 @@ impl PlayerManager {
                 self.media_event(app, event);
             }
         }
-        let bounds = self.bounds.lock().map_err(AppError::io)?.clone();
-        self.set_bounds(app, bounds).await?;
+        if !video_surface::is_canvas(app) {
+            // mpv may have created its child window since the last layout update.
+            crate::overlay::schedule(app);
+        }
         let manager = Arc::downgrade(self);
         let app = app.clone();
         let starting_position = self.snapshot().position;
@@ -835,7 +843,7 @@ impl PlayerManager {
                     && (!manager.restarted.load(Ordering::SeqCst)
                         || (state.position - starting_position).abs() < 0.5)
                 {
-                    manager.recover(&app, MediaFailure::Network);
+                    manager.recover(&app, token, MediaFailure::Network);
                 }
             }
         });
@@ -877,7 +885,11 @@ impl PlayerManager {
             s.load_id = load;
             s.video = Some(task.video.clone());
             s.status = "preparing".into();
+            s.position = 0.;
             s.duration = task.video.duration.unwrap_or(0.);
+            s.playback_mode = mode.clone();
+            s.error = None;
+            s.error_code = None;
             s.requested_quality = options_quality(task.quality);
         });
         let result = self
@@ -890,7 +902,7 @@ impl PlayerManager {
                     loudness_db: task.video.youtube_loudness_db,
                 },
                 task.video,
-                None,
+                0.,
                 LoadOptions {
                     load,
                     generation,
@@ -930,8 +942,12 @@ impl PlayerManager {
         start: Option<f64>,
     ) -> AppResult<()> {
         let state = self.snapshot();
-        let position = start.unwrap_or(state.position);
-        if state.status == "ended" && start.is_some() {
+        let position = valid_start(start.unwrap_or(if state.status == "ended" {
+            0.
+        } else {
+            state.position
+        }));
+        if state.status == "ended" {
             self.desired_pause.store(false, Ordering::SeqCst);
         }
         let force_refresh = mode.is_none();
@@ -977,7 +993,7 @@ impl PlayerManager {
             prefer_hls: false,
         };
         let result = if let Some(source) = local {
-            self.open_local_source(app, source, item, Some(position), options)
+            self.open_local_source(app, source, item, position, options)
                 .await
         } else {
             if let Ok(mut context) = self.recovery.lock() {
@@ -990,7 +1006,7 @@ impl PlayerManager {
                     prefer_hls: false,
                 });
             }
-            self.open_remote(app, &item, quality, Some(position), options)
+            self.open_remote(app, &item, quality, position, options)
                 .await
         };
         if let Err(ref error) = result {
@@ -1015,67 +1031,30 @@ impl PlayerManager {
                 }
             }
         }
-        let surface = self.ensure_surface(app).await?;
         #[cfg(windows)]
         {
-            let pipe_name = format!("\\\\.\\pipe\\tubedesk-{}", uuid::Uuid::new_v4());
-            let state = self.snapshot();
-            let mut command = Command::new(self.tools.mpv()?);
-            command
-                .args([
-                    "--idle=yes",
-                    "--no-terminal",
-                    "--keep-open=no",
-                    "--no-config",
-                    "--load-scripts=no",
-                    "--input-default-bindings=no",
-                    "--input-vo-keyboard=no",
-                    "--input-cursor=no",
-                    "--window-dragging=no",
-                    "--input-doubleclick-time=250",
-                    "--osc=no",
-                    "--osd-level=0",
-                    "--ytdl=no",
-                    "--force-window=yes",
-                    "--title=Viewsical video",
-                    "--hwdec=auto-safe",
-                    "--tls-verify=yes",
-                    "--network-timeout=20",
-                    "--cache=yes",
-                    "--cache-pause=yes",
-                    "--cache-pause-initial=yes",
-                    "--cache-pause-wait=3",
-                    "--cache-secs=30",
-                    "--demuxer-readahead-secs=30",
-                    "--demuxer-max-bytes=128MiB",
-                    "--demuxer-max-back-bytes=32MiB",
-                ])
-                .arg(format!("--wid={}", surface as u32))
-                .arg(format!("--input-ipc-server={pipe_name}"))
-                .arg(format!("--volume={}", state.volume))
-                .arg(format!("--mute={}", if state.muted { "yes" } else { "no" }))
-                .arg(format!("--speed={}", state.speed));
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true);
-            hide_command(&mut command);
-            let child = command.spawn().map_err(|_| {
-                AppError::new(
-                    "player_start",
-                    "The native player could not start. Check mpv in Settings.",
-                )
-            })?;
-            let job = ProcessJob::attach(&child)?;
+            let mut epoch = self.engine_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut engine = None;
+            if video_surface::eligible(app).await {
+                match self.spawn_engine(app, epoch, true).await {
+                    Ok(canvas) => engine = Some(canvas),
+                    Err(error) => {
+                        tracing::warn!(code=%error.code, "In-page video startup failed; using native presentation");
+                        video_surface::stop(app, epoch);
+                        epoch = self.engine_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+                    }
+                }
+            }
+            let (child, job, client) = match engine {
+                Some(canvas) => canvas,
+                None => self.spawn_engine(app, epoch, false).await?,
+            };
             *self.process.lock().await = Some(child);
             *self.process_job.lock().map_err(AppError::io)? = Some(job);
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
-            let client = loop {
-                match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name){Ok(client)=>break client,Err(_)if tokio::time::Instant::now()<deadline=>tokio::time::sleep(Duration::from_millis(70)).await,Err(_)=>return Err(AppError::new("player_start","The native player did not respond. Restart Viewsical or check the bundled mpv build."))}
-            };
+            if !video_surface::is_canvas(app) {
+                crate::overlay::set_video_visible(app, self.video_visible());
+            }
             let (reader, writer) = tokio::io::split(client);
-            let epoch = self.engine_epoch.fetch_add(1, Ordering::SeqCst) + 1;
             *self.writer.lock().await = Some(Arc::new(AsyncMutex::new(writer)));
             let manager = self.clone();
             let handle = app.clone();
@@ -1112,7 +1091,11 @@ impl PlayerManager {
                     .as_mut()
                     .and_then(|process| process.try_wait().ok().flatten())
                     .and_then(|status| status.code());
-                tracing::warn!(exit_code, "Native player IPC ended");
+                tracing::warn!(exit_code, "Player IPC ended");
+                if video_surface::is_canvas(&handle) {
+                    manager.recover_video_renderer(&handle, epoch).await;
+                    return;
+                }
                 manager.writer.lock().await.take();
                 if matches!(
                     manager.snapshot().status.as_str(),
@@ -1158,7 +1141,9 @@ impl PlayerManager {
                     let Some(manager) = weak.upgrade() else {
                         break;
                     };
-                    if manager.writer.lock().await.is_none() {
+                    if manager.engine_epoch.load(Ordering::SeqCst) != epoch
+                        || manager.writer.lock().await.is_none()
+                    {
                         break;
                     }
                     if matches!(manager.snapshot().status.as_str(), "playing" | "buffering") {
@@ -1170,13 +1155,161 @@ impl PlayerManager {
         }
         #[cfg(not(windows))]
         {
-            let _ = surface;
+            let _ = app;
             Err(AppError::new(
                 "platform",
                 "Native playback currently supports Windows.",
             ))
         }
     }
+    #[cfg(windows)]
+    async fn spawn_engine(
+        &self,
+        app: &AppHandle,
+        epoch: u64,
+        canvas: bool,
+    ) -> AppResult<(Child, ProcessJob, tokio::net::windows::named_pipe::NamedPipeClient)> {
+        let pipe_name = format!(r"\\.\pipe\tubedesk-{}", uuid::Uuid::new_v4());
+        let state = self.snapshot();
+        let mut command = if canvas {
+            let mut command = Command::new(std::env::current_exe().map_err(AppError::io)?);
+            command
+                .arg("--viewsical-video-renderer")
+                .arg(self.tools.root().join("libmpv-2.dll"))
+                .arg(&pipe_name)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped());
+            command
+        } else {
+            let surface = self.ensure_surface(app).await?;
+            let mut command = Command::new(self.tools.mpv()?);
+            command
+                .arg(format!("--wid={}", surface as u32))
+                .arg(format!("--input-ipc-server={pipe_name}"))
+                .args(["--force-window=yes", "--title=Viewsical video", "--hwdec=auto-safe"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null());
+            command
+        };
+        command
+            .args([
+                "--idle=yes",
+                "--terminal=no",
+                "--keep-open=no",
+                "--config=no",
+                "--load-scripts=no",
+                "--input-default-bindings=no",
+                "--input-vo-keyboard=no",
+                "--input-cursor=no",
+                "--window-dragging=no",
+                "--input-doubleclick-time=250",
+                "--osc=no",
+                "--osd-level=0",
+                "--ytdl=no",
+                "--tls-verify=yes",
+                "--network-timeout=20",
+                "--cache=yes",
+                "--cache-pause=yes",
+                "--cache-pause-initial=yes",
+                "--cache-pause-wait=3",
+                "--cache-secs=30",
+                "--demuxer-readahead-secs=30",
+                "--demuxer-max-bytes=128MiB",
+                "--demuxer-max-back-bytes=32MiB",
+            ])
+            .arg(format!("--volume={}", state.volume))
+            .arg(format!("--mute={}", if state.muted { "yes" } else { "no" }))
+            .arg(format!("--speed={}", state.speed))
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        hide_command(&mut command);
+        let mut child = command.spawn().map_err(|_| {
+            AppError::new("player_start", "The player could not start. Check mpv in Settings.")
+        })?;
+        let job = ProcessJob::attach(&child)?;
+        if canvas {
+            if let Err(error) = video_surface::start(app, &mut child, epoch).await {
+                let _ = child.kill().await;
+                return Err(error);
+            }
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        let client = loop {
+            match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
+                Ok(client) => break client,
+                Err(_) if tokio::time::Instant::now() < deadline
+                    && child.try_wait().is_ok_and(|result| result.is_none()) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                }
+                Err(_) => {
+                    video_surface::stop(app, epoch);
+                    let _ = child.kill().await;
+                    return Err(AppError::new("player_start", "The player did not respond. Restart Viewsical or check the bundled mpv build."));
+                }
+            }
+        };
+        Ok((child, job, client))
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn recover_video_renderer<'a>(
+        self: &'a Arc<Self>,
+        app: &'a AppHandle,
+        epoch: u64,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            {
+                let _starting = self.starting.lock().await;
+                if self.closing.load(Ordering::SeqCst)
+                    || self.engine_epoch.load(Ordering::SeqCst) != epoch
+                    || !video_surface::is_canvas(app)
+                {
+                    return;
+                }
+                self.engine_epoch.fetch_add(1, Ordering::SeqCst);
+                video_surface::stop(app, epoch);
+                self.writer.lock().await.take();
+                if let Ok(mut replies) = self.replies.lock() {
+                    replies.clear();
+                }
+                if let Some(mut child) = self.process.lock().await.take() {
+                    let _ = child.kill().await;
+                }
+                if let Ok(mut job) = self.process_job.lock() {
+                    job.take();
+                }
+            }
+            let state = self.snapshot();
+            if !matches!(state.status.as_str(), "preparing" | "buffering" | "playing" | "paused") {
+                return;
+            }
+            let Some(item) = state.video else { return };
+            let options = LoadOptions {
+                load: state.load_id,
+                generation: self.source_generation.load(Ordering::SeqCst),
+                mode: state.playback_mode,
+                fresh_preferences: false,
+                force_refresh: false,
+                prefer_hls: false,
+            };
+            if self.check_load(app, &options).is_err() {
+                return;
+            }
+            let local = self.local_path.lock().ok().and_then(|source| source.clone());
+            let result = if let Some(source) = local {
+                self.open_local_source(app, source, item, state.position, options).await
+            } else {
+                self.open_remote(app, &item, state.requested_quality, state.position, options).await
+            };
+            if let Err(error) = result {
+                if self.load.load(Ordering::SeqCst) == state.load_id && error.code != "cancelled" {
+                    self.fail(app, &error);
+                }
+            }
+        })
+    }
+
     async fn send(&self, command: Value) -> AppResult<Value> {
         let writer = self.writer.lock().await.clone().ok_or_else(|| {
             AppError::new(
@@ -1252,7 +1385,9 @@ impl PlayerManager {
     }
     fn release_source_lease(&self, token: SourceToken) {
         if let Ok(mut ended) = self.ended_source.lock() {
-            *ended = Some(token);
+            if self.token() == token {
+                *ended = Some(token);
+            }
         }
         if let Ok(mut current) = self.cache_lease.lock() {
             if current.as_ref().is_some_and(|(source, _)| *source == token) {
@@ -1303,30 +1438,55 @@ impl PlayerManager {
             app.state::<AppState>().cache.schedule(app, plan);
         }
     }
+    fn audio_check_active(&self, token: SourceToken) -> bool {
+        self.token() == token
+            && !self.closing.load(Ordering::SeqCst)
+            && self
+                .ended_source
+                .lock()
+                .is_ok_and(|ended| *ended != Some(token))
+            && self.state.lock().is_ok_and(|state| {
+                state.load_id == token.load
+                    && matches!(
+                        state.status.as_str(),
+                        "preparing" | "buffering" | "playing" | "paused"
+                    )
+            })
+    }
     fn schedule_audio_check(self: &Arc<Self>, app: &AppHandle) {
+        let token = self.token();
+        if !self.audio_check_active(token) {
+            return;
+        }
         if let Ok(mut audio) = self.audio.lock() {
-            if audio.checking {
+            if audio.checking || audio.ready(self.desired_pause.load(Ordering::SeqCst)) {
                 return;
             }
             audio.checking = true;
         }
         let manager = self.clone();
         let app = app.clone();
-        let token = self.token();
         tauri::async_runtime::spawn(async move {
-            for round in 0..3 {
+            'checks: for round in 0..3 {
                 tokio::time::sleep(Duration::from_millis(if round == 0 { 750 } else { 1500 }))
                     .await;
-                if manager.token() != token || manager.closing.load(Ordering::SeqCst) {
-                    return;
+                if !manager.audio_check_active(token) {
+                    break;
+                }
+                if manager
+                    .audio
+                    .lock()
+                    .is_ok_and(|audio| audio.ready(manager.desired_pause.load(Ordering::SeqCst)))
+                {
+                    break;
                 }
                 for name in ["track-list", "audio-params", "audio-out-params"] {
                     let value = manager
                         .send(json!(["get_property", name]))
                         .await
                         .unwrap_or(Value::Null);
-                    if manager.token() != token {
-                        return;
+                    if !manager.audio_check_active(token) {
+                        break 'checks;
                     }
                     manager.update_audio_property(name, &value);
                 }
@@ -1360,8 +1520,8 @@ impl PlayerManager {
                     // Reset only the selected audio decoder/output. Intentional
                     // mute and volume are never changed by this repair.
                     let _ = manager.send(json!(["set_property", "aid", "no"])).await;
-                    if manager.token() != token {
-                        return;
+                    if !manager.audio_check_active(token) {
+                        break;
                     }
                     let _ = manager.send(json!(["set_property", "aid", id])).await;
                     tracing::info!(
@@ -1371,7 +1531,10 @@ impl PlayerManager {
                     );
                     continue;
                 }
-                if round == 2 && ((!selected && paused) || (playing && !paused)) {
+                if round == 2
+                    && ((!selected && paused) || (playing && !paused))
+                    && manager.audio_check_active(token)
+                {
                     let failure = merge_failure(
                         manager
                             .failure
@@ -1380,7 +1543,7 @@ impl PlayerManager {
                             .unwrap_or_default(),
                         MediaFailure::AudioMissing,
                     );
-                    manager.recover(&app, failure);
+                    manager.recover(&app, token, failure);
                 }
             }
             if manager.token() == token {
@@ -1402,7 +1565,7 @@ impl PlayerManager {
     }
     fn event(self: &Arc<Self>, app: &AppHandle, value: Value) {
         let event = value["event"].as_str().unwrap_or("");
-        if event == "end-file" {
+        if event == "end-file" && value["reason"] != "redirect" {
             let ended = value["playlist_entry_id"].as_i64().and_then(|id| {
                 self.entries
                     .lock()
@@ -1542,11 +1705,16 @@ impl PlayerManager {
                                     _ => state.buffered_seconds = number.max(0.),
                                 }
                             }
-                            if let Ok(mut last) = self.last_frame_emit.lock() {
+                            let emit = self.last_frame_emit.lock().is_ok_and(|mut last| {
                                 if last.elapsed() >= Duration::from_millis(200) {
                                     *last = Instant::now();
-                                    self.publish(app);
+                                    true
+                                } else {
+                                    false
                                 }
+                            });
+                            if emit {
+                                self.publish_progress(app);
                             }
                         }
                     }
@@ -1589,11 +1757,13 @@ impl PlayerManager {
                 "eof" => {
                     let state = self.snapshot();
                     if premature_eof(&state) {
-                        self.recover(app, MediaFailure::Premature);
+                        self.recover(app, self.token(), MediaFailure::Premature);
                     } else {
                         self.change(app, |s| {
                             s.status = "ended".into();
                             s.position = s.duration.max(s.position);
+                            s.error = None;
+                            s.error_code = None;
                         });
                         self.save_history();
                     }
@@ -1605,7 +1775,7 @@ impl PlayerManager {
                         self.failure.lock().map(|f| *f).unwrap_or_default(),
                         structured,
                     );
-                    self.recover(app, failure);
+                    self.recover(app, self.token(), failure);
                 }
                 "redirect" => {
                     if let (Some(first), Some(count)) = (
@@ -1652,9 +1822,17 @@ impl PlayerManager {
             self.change(app, |s| s.status = status.into());
         }
     }
-    fn recover(self: &Arc<Self>, app: &AppHandle, failure: MediaFailure) {
+    fn recover(self: &Arc<Self>, app: &AppHandle, token: SourceToken, failure: MediaFailure) {
         let state = self.snapshot();
-        let token = self.token();
+        if self.token() != token
+            || state.load_id != token.load
+            || matches!(
+                state.status.as_str(),
+                "ended" | "failed" | "idle" | "resolving"
+            )
+        {
+            return;
+        }
         let can_retry = !matches!(failure, MediaFailure::Decoder | MediaFailure::Unavailable)
             && self.local_path.lock().map(|p| p.is_none()).unwrap_or(false);
         let context = {
@@ -1703,17 +1881,26 @@ impl PlayerManager {
             if manager.check_load(&app, &options).is_err() || manager.token() != token {
                 return;
             }
-            manager.change(&app, |s| {
+            {
+                let Ok(mut s) = manager.state.lock() else {
+                    return;
+                };
+                if s.load_id != token.load
+                    || matches!(s.status.as_str(), "ended" | "failed" | "idle" | "resolving")
+                {
+                    return;
+                }
                 s.status = "resolving".into();
                 s.error = Some("Refreshing the video source…".into());
                 s.error_code = None;
-            });
+            }
+            manager.publish(&app);
             let result = manager
                 .open_remote(
                     &app,
                     &context.item,
                     context.quality,
-                    Some(state.position),
+                    state.position,
                     options,
                 )
                 .await;
@@ -1958,7 +2145,12 @@ impl PlayerManager {
             self.action_inner(app, action.name(), value).await
         }
     }
-    pub async fn set_bounds(&self, app: &AppHandle, bounds: PlayerBounds) -> AppResult<()> {
+    fn set_bounds(
+        &self,
+        app: &AppHandle,
+        bounds: PlayerBounds,
+        frame: Option<u64>,
+    ) -> AppResult<()> {
         if ![bounds.x, bounds.y, bounds.width, bounds.height]
             .iter()
             .all(|n| n.is_finite())
@@ -1973,84 +2165,20 @@ impl PlayerManager {
                 "The video surface bounds are invalid.",
             ));
         }
-        *self.bounds.lock().map_err(AppError::io)? = bounds.clone();
-        crate::overlay::sync(app, bounds.clone(), self.video_visible());
-        let surface = *self.surface.lock().map_err(AppError::io)?;
-        let video_mode = self.snapshot().playback_mode == "video";
-        let player_pid = self
-            .process
-            .lock()
-            .await
-            .as_ref()
-            .and_then(|child| child.id());
-        if let Some(handle) = surface {
-            app.run_on_main_thread(move || {
-                #[cfg(windows)]
-                unsafe {
-                    use windows::Win32::{
-                        Foundation::{HWND, RECT},
-                        UI::WindowsAndMessaging::*,
-                    };
-                    // Input belongs to the shared web overlay. Keep the mpv
-                    // child disabled so it cannot steal focus or dispatch a
-                    // duplicate click/shortcut through the old native path.
-                    if let (Some(expected), Ok(child)) =
-                        (player_pid, GetWindow(HWND(handle as *mut _), GW_CHILD))
-                    {
-                        let mut actual = 0;
-                        GetWindowThreadProcessId(child, Some(&mut actual));
-                        if actual == expected {
-                            let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(
-                                child, false,
-                            );
-                        }
-                    }
-                    let width = bounds.width.round().clamp(1., 16384.) as i32;
-                    let height = bounds.height.round().clamp(1., 16384.) as i32;
-                    let radius = bounds
-                        .radius
-                        .unwrap_or(0.)
-                        .clamp(0., bounds.width.min(bounds.height) / 2.)
-                        .round() as i32;
-                    let mut client = RECT::default();
-                    let clip = GetParent(HWND(handle as *mut _))
-                        .ok()
-                        .filter(|parent| GetClientRect(*parent, &mut client).is_ok())
-                        .and_then(|_| {
-                            crate::player_geometry::visible_clip(
-                                &bounds,
-                                (client.right, client.bottom),
-                            )
-                        });
-                    if let Some(clip) = clip {
-                        crate::player_geometry::apply_region(
-                            HWND(handle as *mut _),
-                            width,
-                            height,
-                            radius,
-                            clip,
-                        );
-                    }
-                    let visible = clip.is_some() && video_mode;
-                    let _ = SetWindowPos(
-                        HWND(handle as *mut _),
-                        Some(HWND_TOP),
-                        bounds.x.round().clamp(-32768., 32768.) as i32,
-                        bounds.y.round().clamp(-32768., 32768.) as i32,
-                        width,
-                        height,
-                        SWP_NOACTIVATE
-                            | if visible {
-                                SWP_SHOWWINDOW
-                            } else {
-                                SWP_HIDEWINDOW
-                            },
-                    );
-                }
-            })
-            .map_err(AppError::io)?;
+        if !video_surface::is_canvas(app) {
+            crate::overlay::set_bounds(app, bounds, frame);
         }
         Ok(())
+    }
+    #[cfg(windows)]
+    pub(crate) fn native_surface(&self) -> Option<(isize, Option<u32>)> {
+        let handle = self.surface.lock().ok().and_then(|surface| *surface)?;
+        let player_pid = self
+            .process
+            .try_lock()
+            .ok()
+            .and_then(|process| process.as_ref().and_then(Child::id));
+        Some((handle, player_pid))
     }
     async fn ensure_surface(&self, app: &AppHandle) -> AppResult<isize> {
         if let Some(surface) = *self.surface.lock().map_err(AppError::io)? {
@@ -2136,10 +2264,12 @@ impl PlayerManager {
         self.load.fetch_add(1, Ordering::SeqCst);
         self.attempt.fetch_add(1, Ordering::SeqCst);
     }
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self, app: &AppHandle) {
         self.begin_shutdown();
         self.save_history();
-        self.engine_epoch.fetch_add(1, Ordering::SeqCst);
+        let epoch = self.engine_epoch.fetch_add(1, Ordering::SeqCst);
+        #[cfg(windows)]
+        video_surface::stop(app, epoch);
         self.writer.lock().await.take();
         if let Some(mut process) = self.process.lock().await.take() {
             let _ = process.kill().await;
@@ -2346,8 +2476,6 @@ pub async fn retry_player_overlay(
     }
     crate::overlay::retry(&app).await?;
     state.player.publish_presentation(&app);
-    let bounds = state.player.bounds.lock().map_err(AppError::io)?.clone();
-    crate::overlay::sync(&app, bounds, state.player.video_visible());
     Ok(())
 }
 fn ensure_control_window(label: &str) -> AppResult<()> {
@@ -2367,13 +2495,9 @@ pub async fn play_video(
     state: State<'_, AppState>,
     item: MediaItem,
     quality: u32,
-    start_seconds: Option<f64>,
     playback_mode: Option<String>,
 ) -> AppResult<()> {
-    state
-        .player
-        .play(&app, item, quality, start_seconds, playback_mode)
-        .await
+    state.player.play(&app, item, quality, playback_mode).await
 }
 #[tauri::command]
 pub async fn play_local(
@@ -2409,12 +2533,13 @@ pub async fn player_ui_context(
     state.player.ui_context(&app, context).await
 }
 #[tauri::command]
-pub async fn player_bounds(
+pub fn player_bounds(
     app: AppHandle,
     state: State<'_, AppState>,
     bounds: PlayerBounds,
+    frame: Option<u64>,
 ) -> AppResult<()> {
-    state.player.set_bounds(&app, bounds).await
+    state.player.set_bounds(&app, bounds, frame)
 }
 #[tauri::command]
 pub fn player_state(state: State<'_, AppState>) -> PlayerState {
@@ -2526,6 +2651,7 @@ mod tests {
         let mut tracker = EntryTracker::default();
         tracker.map.insert(10, old);
         tracker.map.insert(11, new);
+        tracker.route(json!({"event":"start-file","playlist_entry_id":11}), new);
         assert!(tracker
             .route(
                 json!({"event":"end-file","playlist_entry_id":10,"reason":"error"}),
@@ -2538,6 +2664,12 @@ mod tests {
                 new
             )
             .is_some());
+        assert!(tracker
+            .route(
+                json!({"event":"property-change","name":"audio-out-params","data":null}),
+                new
+            )
+            .is_none());
     }
     #[test]
     fn source_options_clear_external_tracks_for_audio_mode() {

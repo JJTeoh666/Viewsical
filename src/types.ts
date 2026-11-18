@@ -1,3 +1,9 @@
+export interface ReplayHeatmapInterval {
+  startTime: number;
+  endTime: number;
+  value: number;
+}
+
 export interface MediaItem {
   id: string;
   kind: string;
@@ -10,6 +16,7 @@ export interface MediaItem {
   description: string | null;
   playlistIndex?: number | null;
   youtubeLoudnessDb?: number | null;
+  heatmap?: ReplayHeatmapInterval[];
 }
 
 export interface CollectionSummary { id: string; title: string; owner: string; thumbnail: string | null; itemCount: number | null; description: string | null; isMix: boolean; url: string }
@@ -73,7 +80,7 @@ export interface DownloadRequest {
   directory: string | null;
   format: string;
 }
-export interface HistoryItem { video: MediaItem; position: number; duration: number; updatedAt: number }
+export interface HistoryItem { video: MediaItem; duration: number; updatedAt: number }
 export interface ToolStatus { name: string; available: boolean; version: string | null }
 export interface MediaCacheEntry { id: string; videoId: string; title: string; mode: string; quality: number; bytes: number; lastAccessed: number; pinned: boolean }
 export interface MediaCacheSummary { enabled: boolean; maxBytes: number; totalBytes: number; audioBytes: number; videoBytes: number; pendingBytes: number; entryCount: number; activeCount: number; entries: MediaCacheEntry[] }
@@ -89,6 +96,7 @@ export interface Bootstrap {
   tools: ToolStatus[];
 }
 export interface PlayerBounds { x: number; y: number; width: number; height: number; visible: boolean; radius?: number; viewportTop?: number }
+export type VideoRendererMode = 'canvas' | 'native';
 export interface PlayerUiContext { hasPrevious: boolean; hasNext: boolean; mini: boolean; theater: boolean; fullscreen: boolean }
 export interface PlayerPresentation { revision: number; player: PlayerState; ui: PlayerUiContext; pausedIntent: boolean; overlayError: string | null }
 export type PlayerOverlayAction = PlayerAction | 'mode' | 'next' | 'previous' | 'fullscreen' | 'theater' | 'focus-controls' | 'scroll';

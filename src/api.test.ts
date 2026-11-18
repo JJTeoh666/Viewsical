@@ -10,16 +10,14 @@ const video: MediaItem = { id: 'test-video', kind: 'video', title: 'Test video',
 beforeEach(() => vi.mocked(invoke).mockClear());
 afterAll(() => vi.unstubAllGlobals());
 
-describe('playback position handoff', () => {
-  it('lets the backend restore a saved position when no start is requested', async () => {
+describe('fresh playback', () => {
+  it('opens the video without a saved position', async () => {
     await api.playVideo(video, 1080);
-    expect(invoke).toHaveBeenCalledWith('play_video', { item: video, quality: 1080, startSeconds: null, playbackMode: null });
+    expect(invoke).toHaveBeenCalledWith('play_video', { item: video, quality: 1080, playbackMode: null });
   });
 
-  it('preserves explicit replay and history positions', async () => {
-    await api.playVideo(video, 720, 0);
-    expect(invoke).toHaveBeenLastCalledWith('play_video', { item: video, quality: 720, startSeconds: 0, playbackMode: null });
-    await api.playVideo(video, 720, 32.5);
-    expect(invoke).toHaveBeenLastCalledWith('play_video', { item: video, quality: 720, startSeconds: 32.5, playbackMode: null });
+  it('passes the selected playback mode', async () => {
+    await api.playVideo(video, 720, 'audio');
+    expect(invoke).toHaveBeenLastCalledWith('play_video', { item: video, quality: 720, playbackMode: 'audio' });
   });
 });

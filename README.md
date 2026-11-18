@@ -8,7 +8,15 @@ Download the Windows x64 installer or portable ZIP from [the latest GitHub relea
 
 Open `artifacts/Viewsical-portable/Viewsical.exe`, or install the setup executable in `artifacts`. Keep the portable `tools` and `ytdlp-plugins` folders beside the executable. Windows WebView2 Runtime is required; the installer can obtain it.
 
-Viewsical has a YouTube-style sidebar, search, video grid and watch page. Paste a video link or search for words. The integrated desktop header includes search, back/forward navigation and window controls. Playback controls appear over the video while the pointer is inside and hide when it leaves. Keyboard controls remain available. Playback menus use translucent glass styling. Click empty video to pause/resume; double-click for fullscreen. Open the settings gear for playback speed, quality and video/audio-only mode. Keyboard-accessible controls are also available below the video. Use **Downloads** to pause, resume, play, or reveal files. Quality choices on a video card are maximum resolution caps; the player lists actual available qualities after resolving a video. MP4 downloads require H.264/AAC availability; choose MKV when the source offers other codecs. Audio downloads preserve the selected source format.
+Viewsical has a YouTube-style sidebar, search, video grid and watch page. Paste a video link or search for words. The integrated desktop header includes search, back/forward navigation and window controls. Playback controls appear over the video while the pointer is inside and hide when it leaves. Keyboard controls remain available. Playback menus use translucent glass styling. Click empty video to pause/resume; double-click for fullscreen. Open the settings gear for playback speed, quality and video/audio-only mode. Press Tab to focus the keyboard-accessible playback controls. Use **Downloads** to pause, resume, play, or reveal files. Quality choices on a video card are maximum resolution caps; the player lists actual available qualities after resolving a video. MP4 downloads require H.264/AAC availability; choose MKV when the source offers other codecs. Audio downloads preserve the selected source format.
+
+### Update an installed copy
+
+Close Viewsical and run the newer Windows setup executable. On **Already Installed**, choose **Do not uninstall**. Keep the current installation folder. Setup replaces the program files in place and retains the library, sign-in, and settings.
+
+### Uninstall
+
+Close Viewsical and choose **Uninstall** under **Settings > Apps > Installed apps**. If prompted, allow setup to close Viewsical. Setup waits for Windows to release the program file. If it stays in use, close Viewsical and choose **Retry**.
 
 ## Browsing and playback
 
@@ -22,11 +30,11 @@ Audio normalization is on by default under **Settings → Playback → Normalize
 
 The app remembers whether its main window was maximized and restores that choice at startup. Fullscreen and minimization do not replace it.
 
-Scrolling a watch page keeps the visible portion of the native video playing, clipped below the fixed header. It retains its size, playback position and controls. Search uses a separate circular submit button; Home remains available in the sidebar and through the app logo. Home and individual playlist pages show **Back to top** after scrolling, with reduced-motion support and space reserved beside the mini-player or above the bottom player.
+Scrolling a watch page keeps the visible portion of the video playing, clipped below the fixed header. It retains its size, playback position and controls. Search uses a separate circular submit button; Home remains available in the sidebar and through the app logo. Home and individual playlist pages show **Back to top** after scrolling, with reduced-motion support and space reserved beside the mini-player or above the bottom player.
 
-Press **↑ / ↓** to change app volume by **5 percentage points**, including while paused or using the bottom player. Text fields, menus and dialogs keep their normal arrow navigation. Volume stays separate from mute and normalization. After the last queued item finishes, dragging the progress bar resumes that item at the chosen position; Play replays it from the beginning.
+Press **↑ / ↓** to change app volume by **5 percentage points**, including while paused or using the bottom player. Text fields, menus and dialogs keep their normal arrow navigation. Volume stays separate from mute and normalization. Opening an item starts it from the beginning, including from History and Downloads. After the last queued item finishes, dragging the progress bar resumes that item at the chosen position, and Play restarts it from the beginning.
 
-Video and audio use the same React controls and Lucide icons. A single reusable transparent WebView presents the controls above mpv video. Controls hide immediately on pointer leave and after 2.5 seconds of inactivity while playing. The outer scrollbar is hidden; page scrolling, automatic pagination and internal queue/menu scrollbars remain available. See [shared player implementation and verification](docs/SHARED_PLAYER.md).
+Video and audio use the same React controls and Lucide icons. The in-page renderer uses libmpv to display video and controls in the main WebView. The compatibility renderer uses mpv’s native window and a separate transparent controls WebView. Controls hide immediately on pointer leave and after 2.5 seconds of inactivity while playing. The outer scrollbar is hidden; page scrolling, automatic pagination and internal queue/menu scrollbars remain available. See [shared player implementation and verification](docs/SHARED_PLAYER.md).
 
 ## Media cache and comments
 
@@ -46,20 +54,71 @@ Google may reject embedded sign-in with “This browser or app may not be secure
 
 ## Development
 
-Requirements: Node.js, Rust MSVC, Microsoft C++ Build Tools with the Windows SDK, and WebView2. This workspace has a project-local Rust toolchain and build tools in `.tools`; those are not shipped with the app.
+Development requires Node.js, Rust MSVC, Microsoft C++ Build Tools with the Windows SDK, and WebView2. This workspace has a project-local Rust toolchain and build tools in `.tools`.
 
 ```powershell
 npm ci
 .\scripts\setup-tools.ps1
+```
+
+`scripts/setup-tools.ps1` downloads pinned yt-dlp, Deno, mpv, libmpv, FFmpeg and FFprobe. It verifies available upstream archive checksums and records every binary SHA-256 in `tools/manifest.json`. The standalone yt-dlp release includes its EJS solver support. Updating the adapter is an explicit source/build change; there is no silent runtime self-update.
+
+### Run the desktop app with a test profile
+
+Run these commands in PowerShell to launch the Tauri desktop app with its own test library and WebView2 profile. Reuse the same folders when checking behavior across restarts.
+
+```powershell
+Set-Location -LiteralPath 'C:\jj\app test\Viewsical'
+$env:CARGO_TARGET_DIR = Join-Path $PWD.Path '.tools\playback-target'
+$env:TUBEDESK_DATA_DIR = Join-Path $PWD.Path '.tools\manual-test-data'
+$env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $PWD.Path '.tools\manual-test-webview'
 .\scripts\dev.ps1
 ```
 
-`scripts/setup-tools.ps1` downloads pinned yt-dlp, Deno, mpv, FFmpeg and FFprobe. It verifies available upstream archive checksums and records every binary SHA-256 in `tools/manifest.json`. The standalone yt-dlp release includes its EJS solver support. Updating the adapter is an explicit source/build change; there is no silent runtime self-update.
+- **Start from zero.** Play part of a video, then reopen it from History. Confirm it starts at `0:00`. Relaunch the dev app and repeat in audio-only mode.
+- **Queue completion.** Queue two short items. Confirm the first advances to the second, the last stops without an error, and Play replays it from `0:00`. Test video and audio-only modes.
+- **Miniplayer.** Go to Home during playback. Check that the surface has no fullscreen button and that **Expand player** in the footer opens the watch page.
+- **Playback and scrolling.** Pause, seek, and switch between video and audio-only on the same item. Confirm the position carries across the switch. Scroll the watch page slowly and quickly in both directions with video playing. Check that the video and controls move together and clip at the header.
+- **Most replayed.** Open a YouTube video with a replay graph, such as `dQw4w9WgXcQ`. Check that the graph appears above the seek bar in both modes, and that you can still drag the bar. A video without replay data uses the plain seek bar.
+
+### Run checks before packaging
+
+Close the dev app and run these checks in the same PowerShell window. The browser smoke test uses Chrome and the frontend built by `npm run build`.
 
 ```powershell
-npm run check
 npm test
 .\scripts\test-rust.ps1
+npm run build
+node .\scripts\v017-browser-smoke.mjs
+```
+
+The native smoke test opens its own desktop app instance and checks real mpv playback, scrolling, queue completion, and replay. It uses Python for the Windows clipping check and expects `.tools/v016-fixture/video.mkv`, `.tools/v016-fixture/audio.mka`, and `.tools/read-player-regions.py` in the development workspace.
+
+```powershell
+. .\scripts\env.ps1
+cargo build --manifest-path .\src-tauri\Cargo.toml
+node .\scripts\v017-native-smoke.mjs
+```
+
+### Check the in-page video renderer
+
+The dev app uses the in-page renderer on supported systems. Set `$env:TUBEDESK_VIDEO_RENDERER = 'native'` before launch to compare the compatibility renderer. Clear the variable to restore automatic selection. Run `.\scripts\setup-tools.ps1` first if your workspace predates the bundled libmpv DLL.
+
+The desktop scroll check uses Python and FFmpeg to compare the displayed video with a marker beside it. It opens an isolated Windows test window and creates local 1080p60 and 4K60 fixtures.
+
+```powershell
+npm run build
+. .\scripts\env.ps1
+cargo build --manifest-path .\src-tauri\Cargo.toml --features tauri/custom-protocol
+node .\scripts\verify-video-renderer.mjs native
+node .\scripts\verify-video-renderer.mjs canvas
+```
+
+### Package for Windows
+
+After the checks pass, run the packaging script.
+
+```powershell
 .\scripts\build.ps1
 ```
 
@@ -70,7 +129,7 @@ The build script produces a per-user NSIS installer and a portable ZIP in `artif
 - `src`: local interface, typed IPC bridge, queue, presentation and accessibility.
 - `src-tauri/src/session.rs`: isolated native cookie/session handling and remembered sign-in.
 - `src-tauri/src/youtube.rs` and `youtube/`: replaceable yt-dlp adapter, split into request lifecycle, helper execution, browsing, playback sources, identity, metadata and error modules.
-- `src-tauri/src/player.rs`: native child window, mpv IPC, selection, position restoration and bounded recovery.
+- `src-tauri/src/player.rs`: native child window, mpv IPC, source selection, seeking and bounded recovery.
 - `src-tauri/src/downloads.rs`: persistent jobs, source refresh on resume, partial files, merging and FFprobe validation.
 - `src-tauri/src/media_cache.rs`: persistent validated media components, active-file leases, storage limits and cleanup.
 - `src-tauri/src/comments.rs`: bounded read-only comments, stable pagination anchors and cancellation.

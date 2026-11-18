@@ -64,6 +64,7 @@ export default function Application() {
   const pageRef = useRef(page);
   const sessionGenerationRef = useRef<number | null>(null);
   const advanceRef = useRef(-1);
+  const playbackRequest = useRef(0);
   const localPlayback = useRef(false);
   const pendingAdvance = useRef<{ queueId: string; entryId: string | null } | null>(null);
   const nativeRequest = useRef<(request: PlayerUiRequest) => void>(() => {});
@@ -102,10 +103,17 @@ export default function Application() {
   useEffect(() => {
     if (!isDesktop) return;
     void refreshBootstrap(); let disposed = false; const unsubscribers: (() => void)[] = [];
-    const listeners = [api.on<SessionSnapshot>('session-changed', value => { if (!disposed) applySession(value); }), api.on<PlayerState>('player-state', value => { if (!disposed) applyPlayer(value); }), api.on<DownloadTask>('download-updated', value => { if (!disposed) updateDownload(value); }), api.on<PlayerUiRequest>('player-ui-request', request => { if (!disposed && request.loadId === playerRef.current.loadId) nativeRequest.current(request); })];
+    let playerEvents = 0;
+    const playerListener = api.on<PlayerState>('player-state', value => { if (!disposed) { playerEvents++; applyPlayer(value); } });
+    const listeners = [api.on<SessionSnapshot>('session-changed', value => { if (!disposed) applySession(value); }), playerListener, api.on<DownloadTask>('download-updated', value => { if (!disposed) updateDownload(value); }), api.on<PlayerUiRequest>('player-ui-request', request => { if (!disposed && request.loadId === playerRef.current.loadId) nativeRequest.current(request); })];
     for (const promise of listeners) void promise.then(unlisten => { if (disposed) unlisten(); else unsubscribers.push(unlisten); }).catch(showError);
-    const interval = setInterval(() => { const generation = sessionRef.current.generation; void api.player().then(value => { if (!disposed && generation === sessionRef.current.generation) applyPlayer(value); }).catch(() => {}); }, 1000);
-    return () => { disposed = true; unsubscribers.forEach(unlisten => unlisten()); clearInterval(interval); };
+    void playerListener.then(async () => {
+      if (disposed) return;
+      const events = playerEvents, generation = sessionRef.current.generation, request = playbackRequest.current;
+      const value = await api.player();
+      if (!disposed && events === playerEvents && generation === sessionRef.current.generation && request === playbackRequest.current) applyPlayer(value);
+    }).catch(() => {});
+    return () => { disposed = true; unsubscribers.forEach(unlisten => unlisten()); };
   }, [applyPlayer, applySession, refreshBootstrap, showError, updateDownload]);
   useEffect(() => { if (activeKey && !sessionChanged && ready && isDesktop && !(accountPages.has(page.kind) && !connected)) void cache.ensure(activeKey, page.kind as BrowseKind, page.query ?? '').catch(() => {}); }, [activeKey, cache, connected, page.kind, page.query, ready, sessionChanged]);
   useLayoutEffect(() => { const key = activeKey || page.kind; if (restoredScroll.current === key || (activeKey && !entry?.loaded)) return; restoredScroll.current = key; const position = activeKey ? entry?.scrollY ?? 0 : 0; window.scrollTo({ top: position, behavior: 'instant' }); }, [activeKey, entry?.loaded, entry?.scrollY, page.kind]);
@@ -128,22 +136,27 @@ export default function Application() {
     pageRef.current = next; setPage(next); setAccountMenu(false);
   }, [cache, fullscreen, showError]);
   function moveNavigation(direction: number) { const trail = navTrail.current; const index = trail.index + direction; if (index < 0 || index >= trail.pages.length) return; trail.index = index; navigate(trail.pages[index], false); }
-  const requestPlayback = useCallback((item: MediaItem, startSeconds?: number, playbackMode?: PlaybackMode, showWatch = true) => {
+  const requestPlayback = useCallback((item: MediaItem, playbackMode?: PlaybackMode, showWatch = true) => {
     if (!isDesktop) { showError(new Error('Open Viewsical on your desktop to play videos.')); return; }
     if (showWatch) { if (pageRef.current.kind !== 'watch') setPreviousPage(pageRef.current); navigate({ kind: 'watch' }); }
-    localPlayback.current = false; pendingAdvance.current = null; const generation = sessionRef.current.generation;
+    localPlayback.current = false; pendingAdvance.current = null;
+    const generation = sessionRef.current.generation, request = ++playbackRequest.current;
     const mode = settings.alwaysAudioOnly ? 'audio' : playbackMode ?? playerRef.current.playbackMode;
-    setPlayer(current => ({ ...current, video: item, status: 'resolving', error: null, position: startSeconds ?? 0, qualities: [], quality: settings.defaultQuality, playbackMode: mode }));
-    void api.playVideo(item, settings.defaultQuality, startSeconds, mode).catch(error => { if (generation !== sessionRef.current.generation) return; showError(error); setPlayer(current => current.video?.id === item.id ? { ...current, status: 'failed', error: errorMessage(error) } : current); });
+    setPlayer(current => ({ ...current, video: item, status: 'resolving', error: null, position: 0, qualities: [], quality: settings.defaultQuality, playbackMode: mode }));
+    void api.playVideo(item, settings.defaultQuality, mode).catch(error => {
+      if (request !== playbackRequest.current || generation !== sessionRef.current.generation || error?.code === 'cancelled') return;
+      showError(error);
+      setPlayer(current => current.video?.id === item.id ? { ...current, status: 'failed', error: errorMessage(error) } : current);
+    });
   }, [navigate, settings.defaultQuality, settings.alwaysAudioOnly, showError]);
-  const play = useCallback((item: MediaItem, startSeconds?: number, mode?: PlaybackMode) => {
+  const play = useCallback((item: MediaItem) => {
     const current = queueRef.current; const manual = current.source ? emptyQueue() : current; const id = manual.id || crypto.randomUUID();
     let selected = manual.entries.find(value => value.item.id === item.id); if (!selected) selected = { entryId: `${id}:manual:${crypto.randomUUID()}`, sourceIndex: -1, item };
     changeQueue({ ...manual, id, entries: manual.entries.includes(selected) ? manual.entries : [...manual.entries, selected], selectedEntryId: selected.entryId });
     if (browseKinds.has(pageRef.current.kind) && pageRef.current.kind !== 'playlist') { const source = cache.get(browseKey(sessionRef.current.generation, pageRef.current.kind, pageRef.current.query)); setRecommendations({ items: source?.items.filter(value => value.kind === 'video') ?? [], label: pageRef.current.kind === 'search' ? 'More from your search' : 'More to watch' }); }
-    requestPlayback(item, startSeconds, mode);
+    requestPlayback(item);
   }, [cache, changeQueue, requestPlayback]);
-  const selectQueue = useCallback((queued: QueueEntry, showWatch = true) => { changeQueue(current => boundMix({ ...current, selectedEntryId: queued.entryId })); requestPlayback(queued.item, undefined, undefined, showWatch); }, [changeQueue, requestPlayback]);
+  const selectQueue = useCallback((queued: QueueEntry, showWatch = true) => { changeQueue(current => boundMix({ ...current, selectedEntryId: queued.entryId })); requestPlayback(queued.item, undefined, showWatch); }, [changeQueue, requestPlayback]);
   const loadQueuePage = useCallback((retry = false) => {
     const current = queueRef.current;
     if (!current.source || !current.nextCursor || current.loading || (current.error && !retry)) return;
@@ -176,13 +189,22 @@ export default function Application() {
     }
     window.addEventListener('keydown', searchKey); return () => window.removeEventListener('keydown', searchKey);
   }, [accountMenu, clearConfirm, downloadItem, signInOpen]);
-  function startPlaylist(index: number, mode?: PlaybackMode) { if (!entry) return; const values = entry.items.filter(item => item.kind === 'video'); const source = { key: activeKey, query: page.query ?? '', collection: entry.collection ?? page.collection ?? null }; const next = playlistQueue(crypto.randomUUID(), values, index, source, entry.nextCursor); changeQueue(next); if (next.entries[index]) requestPlayback(next.entries[index].item, undefined, mode); }
+  function startPlaylist(index: number, mode?: PlaybackMode) { if (!entry) return; const values = entry.items.filter(item => item.kind === 'video'); const source = { key: activeKey, query: page.query ?? '', collection: entry.collection ?? page.collection ?? null }; const next = playlistQueue(crypto.randomUUID(), values, index, source, entry.nextCursor); changeQueue(next); if (next.entries[index]) requestPlayback(next.entries[index].item, mode); }
   function addToQueue(item: MediaItem) { changeQueue(current => { const id = current.id || crypto.randomUUID(); return { ...current, id, entries: [...current.entries, { entryId: `${id}:manual:${crypto.randomUUID()}`, sourceIndex: -1, item }] }; }); setToast('Added to queue'); }
   function activate(item: MediaItem) { if (item.kind === 'playlist') { const collection: CollectionSummary = { id: item.id, title: item.title, owner: item.channel, thumbnail: item.thumbnail, itemCount: null, description: item.description, isMix: item.id.startsWith('RD'), url: item.url }; navigate({ kind: 'playlist', query: item.url || item.id, title: item.title, collection }); } else if (item.kind === 'channel') navigate({ kind: 'channel', query: item.url || item.id, title: item.title }); else play(item); }
   function submitSearch(event: FormEvent) { event.preventDefault(); const query = searchInput.trim(); if (!query) { searchRef.current?.focus(); return; } if (!isDesktop) { showError(new Error('Search is available in the Viewsical desktop app.')); return; } try { const url = new URL(query); if (/^(www\.|m\.|music\.)?youtube\.com$|^youtu\.be$/.test(url.hostname) && url.searchParams.get('list')) { navigate({ kind: 'playlist', query }); return; } } catch { /* Free text is a regular search. */ } navigate({ kind: 'search', query }); }
   function refreshPage() { if (activeKey) void cache.refresh(activeKey, page.kind as BrowseKind, page.query ?? '').catch(() => {}); }
-  function playDownloaded(task: DownloadTask) { setPreviousPage({ kind: 'downloads' }); navigate({ kind: 'watch' }); localPlayback.current = true; changeQueue(emptyQueue()); setPlayer(current => ({ ...current, video: task.video, status: 'resolving', error: null, position: 0, playbackMode: settings.alwaysAudioOnly || task.mode === 'audio' ? 'audio' : playerRef.current.playbackMode })); void api.playLocal(task.id).catch(error => { showError(error); setPlayer(current => ({ ...current, status: 'failed', error: errorMessage(error) })); }); }
-  function closePlayer() { pendingAdvance.current = null; changeQueue(emptyQueue()); action('stop'); }
+  function playDownloaded(task: DownloadTask) {
+    setPreviousPage({ kind: 'downloads' }); navigate({ kind: 'watch' }); localPlayback.current = true; changeQueue(emptyQueue());
+    const request = ++playbackRequest.current;
+    setPlayer(current => ({ ...current, video: task.video, status: 'resolving', error: null, position: 0, playbackMode: settings.alwaysAudioOnly || task.mode === 'audio' ? 'audio' : playerRef.current.playbackMode }));
+    void api.playLocal(task.id).catch(error => {
+      if (request !== playbackRequest.current || error?.code === 'cancelled') return;
+      showError(error);
+      setPlayer(current => ({ ...current, status: 'failed', error: errorMessage(error) }));
+    });
+  }
+  function closePlayer() { playbackRequest.current++; pendingAdvance.current = null; changeQueue(emptyQueue()); action('stop'); }
   async function openSignIn() { setAccountMenu(false); setSignInOpen(true); setSignInError(''); setSignInBusy(true); try { await api.openSignIn(); } catch (error) { setSignInError(errorMessage(error)); } finally { setSignInBusy(false); } }
   async function completeSignIn() { setSignInBusy(true); setSignInError(''); try { const result = await api.completeSignIn(); applySession(result); if (result.status === 'connected') { setSignInOpen(false); setToast('YouTube account connected'); } else setSignInError(result.message || 'Finish signing in to YouTube, then try again.'); } catch (error) { setSignInError(errorMessage(error)); } finally { setSignInBusy(false); } }
   async function signOut() { setAccountMenu(false); try { await api.signOut(); applySession(await api.session()); setToast('Signed out of Viewsical'); return true; } catch (error) { showError(error); return false; } }
@@ -216,14 +238,14 @@ export default function Application() {
       <div className="sidebar-rule" />
       {sidebar && <div className="sidebar-library"><div className="sidebar-section-label">Your library</div><button className={`nav-item ${page.kind === 'watch' ? 'active' : ''}`} disabled={!player.video} onClick={() => navigate({ kind: 'watch' })}><Video size={22} strokeWidth={1.65} /><span>Now playing</span>{player.status === 'playing' && <span className="playing-bars"><i /><i /><i /></span>}</button>{queue.entries.length > 0 && <div className="queue-count">{queue.entries.length} {queue.entries.length === 1 ? 'video' : 'videos'} in your queue</div>}</div>}
       {!connected && sidebar && <div className="sidebar-signin"><p>Bring your subscriptions and playlists with you.</p><button className="sign-in-button" onClick={() => void openSignIn()}><UserCircle size={20} />Sign in</button></div>}
-      <div className="sidebar-bottom"><button className={`nav-item ${page.kind === 'settings' ? 'active' : ''}`} title={!sidebar ? 'Settings' : undefined} onClick={() => navigate({ kind: 'settings' })}><Settings size={22} strokeWidth={1.65} /><span>Settings</span></button>{sidebar && <p>Viewsical <span>0.1.7</span><br /><small>Your library stays on this device.</small></p>}</div>
+      <div className="sidebar-bottom"><button className={`nav-item ${page.kind === 'settings' ? 'active' : ''}`} title={!sidebar ? 'Settings' : undefined} onClick={() => navigate({ kind: 'settings' })}><Settings size={22} strokeWidth={1.65} /><span>Settings</span></button>{sidebar && <p>Viewsical <span>0.1.8</span><br /><small>Your library stays on this device.</small></p>}</div>
     </aside>
     <main id="main-content" className={`main-content ${page.kind === 'watch' ? 'watch-content' : ''}`}>
       {bootError && <div className="banner error-banner" role="alert"><AlertCircle size={20} /><div><strong>Viewsical couldnâ€™t finish starting</strong><p>{bootError}</p></div><button className="button secondary small" onClick={() => void refreshBootstrap()}>Retry</button></div>}
       {missingTools.length > 0 && page.kind !== 'settings' && <div className="banner"><SlidersHorizontal size={20} /><div><strong>Media tools need setup</strong><p>Some playback or download tools are missing.</p></div><button className="button secondary small" onClick={() => navigate({ kind: 'settings' })}>View settings</button></div>}
       <div className={page.kind === 'watch' ? 'watch-layout' : 'page-layout'}><div className={page.kind === 'watch' ? 'watch-main' : 'route-body'}>
         {page.kind === 'watch' && <div className="watch-topline" key="watch-topline"><button className="back-button" onClick={() => navigate(previousPage)}><ArrowLeft size={18} />Back</button><span className="watch-source"><span className={player.status === 'playing' ? 'status-dot active' : 'status-dot'} />{player.status === 'resolving' ? 'Preparing video' : player.status === 'playing' ? 'Now playing' : player.status === 'paused' ? 'Paused' : 'Video player'}</span></div>}
-        <PlayerHost key="persistent-player" player={player} mini={mini} docked={mini && docked} onDock={() => setDocked(true)} onUndock={() => setDocked(false)} fullscreen={fullscreen} theater={theater} blocked={blocked} hasPrevious={hasPrevious} hasNext={hasNext} focusSignal={focusSignal} onAction={action} onMode={changeMode} onPrevious={() => moveQueue(-1)} onNext={() => moveQueue(1)} onFullscreen={toggleFullscreen} onTheater={toggleTheater} onExpand={() => navigate({ kind: 'watch' })} onClose={closePlayer} onRetry={() => { if (player.video) requestPlayback(player.video, player.status === 'ended' ? 0 : player.position); }} />
+        <PlayerHost key="persistent-player" player={player} mini={mini} docked={mini && docked} onDock={() => setDocked(true)} onUndock={() => setDocked(false)} fullscreen={fullscreen} theater={theater} blocked={blocked} hasPrevious={hasPrevious} hasNext={hasNext} focusSignal={focusSignal} onAction={action} onMode={changeMode} onPrevious={() => moveQueue(-1)} onNext={() => moveQueue(1)} onFullscreen={toggleFullscreen} onTheater={toggleTheater} onExpand={() => navigate({ kind: 'watch' })} onClose={closePlayer} onRetry={() => { if (player.video) requestPlayback(player.video); }} />
         {page.kind === 'watch' ? player.video ? <><WatchInfo video={player.video} onQueue={addToQueue} onDownload={setDownloadItem} /><CommentsPanel videoId={player.video.id} generation={session.generation} cache={commentCache} sort={commentSort} onSort={setCommentSort} /></> : <EmptyState icon={Video} title="Nothing is playing yet" action={<button className="button primary" onClick={() => navigate({ kind: 'home' })}>Find a video</button>}>Search for a video or open one from your downloads.</EmptyState> : <div key="browse-content">
           <div className="page-heading"><div>{['playlist', 'channel'].includes(page.kind) && <button className="back-button" onClick={() => navigate({ kind: page.kind === 'playlist' ? 'playlists' : 'subscriptions' })}><ArrowLeft size={17} />Back</button>}<h1 tabIndex={-1}>{page.kind === 'playlist' ? 'Playlist' : page.title || titles[page.kind] || 'Videos'}{page.kind === 'search' && <span className="query-subtitle">{page.query}</span>}</h1>{page.kind === 'downloads' && <p>Ready to watch, even when youâ€™re offline.</p>}{page.kind === 'history' && <p>Your watch history is saved on this device.</p>}</div><div className="heading-actions">{browseKinds.has(page.kind) && <IconButton label="Refresh videos" disabled={loading} onClick={refreshPage}><RefreshCw size={19} className={loading ? 'spin' : ''} /></IconButton>}{page.kind === 'history' && history.length > 0 && <button className="button secondary small" onClick={() => setClearConfirm(true)}><Trash2 size={16} />Clear history</button>}</div></div>
           {['subscriptions', 'channels'].includes(page.kind) && <div className="page-tabs" aria-label="Subscription view"><button className={page.kind === 'subscriptions' ? 'selected' : ''} aria-pressed={page.kind === 'subscriptions'} onClick={() => navigate({ kind: 'subscriptions' })}>Latest videos</button><button className={page.kind === 'channels' ? 'selected' : ''} aria-pressed={page.kind === 'channels'} onClick={() => navigate({ kind: 'channels' })}>Channels</button></div>}
@@ -237,7 +259,7 @@ export default function Application() {
     <BackToTop enabled={page.kind === 'home' || page.kind === 'playlist'} pageKey={activeKey || page.kind} />
     {downloadItem && <DownloadDialog item={downloadItem} settings={settings} player={player} onClose={() => setDownloadItem(null)} onAdded={task => { updateDownload(task); setToast('Download added'); }} onError={showError} />}
     {signInOpen && <Modal title="Sign in to YouTube" onClose={() => setSignInOpen(false)}><div className="signin-illustration"><UserCircle size={43} strokeWidth={1.4} /><span className="signin-connector" /><span className="brand-mark"><Play size={19} fill="currentColor" strokeWidth={0} /></span></div><p className="modal-intro">Finish signing in in the YouTube window, then return here to connect your account.</p><div className="info-note"><ShieldCheck size={20} /><p>Your session is managed on this computer. Viewsical does not ask for or store your Google password.</p></div><div className="signin-warning"><AlertCircle size={18} /><p>Google may block sign-in in embedded browsers. If that happens, account features will be unavailable. You can still search, play, and download public videos.</p></div>{(signInError || session.status === 'blocked') && <div className="inline-error" role="alert"><AlertCircle size={18} /><span>{signInError || session.message}</span></div>}<button className="text-link reopen-link" disabled={signInBusy} onClick={() => void openSignIn()}><ExternalLink size={16} />Reopen YouTube sign-in</button><div className="modal-footer"><button className="button secondary" onClick={() => setSignInOpen(false)}>Continue without account</button><button className="button primary" disabled={signInBusy} onClick={() => void completeSignIn()}>{signInBusy ? <LoaderCircle size={17} className="spin" /> : <Check size={17} />}{signInBusy ? 'Checkingâ€¦' : 'I have signed in'}</button></div></Modal>}
-    {clearConfirm && <Modal title="Clear watch history?" onClose={() => setClearConfirm(false)}><p className="modal-intro">This removes your local watch history and saved playback positions from Viewsical. Your downloaded files and YouTube account are unaffected.</p><div className="modal-footer"><button className="button secondary" onClick={() => setClearConfirm(false)}>Keep history</button><button className="button primary" onClick={() => { void api.clearHistory().then(() => { setHistory([]); setClearConfirm(false); setToast('Watch history cleared'); }).catch(showError); }}>Clear history</button></div></Modal>}
+    {clearConfirm && <Modal title="Clear watch history?" onClose={() => setClearConfirm(false)}><p className="modal-intro">This removes your local watch history from Viewsical. Your downloaded files and YouTube account are unaffected.</p><div className="modal-footer"><button className="button secondary" onClick={() => setClearConfirm(false)}>Keep history</button><button className="button primary" onClick={() => { void api.clearHistory().then(() => { setHistory([]); setClearConfirm(false); setToast('Watch history cleared'); }).catch(showError); }}>Clear history</button></div></Modal>}
     {toast && <div className="toast" role="status"><span>{toast}</span><IconButton label="Dismiss message" onClick={() => setToast('')}><X size={17} /></IconButton></div>}
     {!isDesktop && <div className="preview-status"><Monitor size={14} /> Desktop preview Â· app features need the Windows app</div>}
   </div>;

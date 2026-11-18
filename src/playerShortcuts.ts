@@ -7,11 +7,12 @@ export function playerShortcut(key: ShortcutKey, context: ShortcutContext): Shor
   if ((key.ctrlKey || key.metaKey) && !key.altKey && !key.shiftKey && key.key.toLowerCase() === 'k') return { action: 'focus-controls' };
   if (key.ctrlKey || key.metaKey || key.altKey || key.shiftKey) return null;
   if ((key.key === 'ArrowUp' || key.key === 'ArrowDown') && (!context.range || context.playerRange)) return { action: 'adjust-volume', value: key.key === 'ArrowUp' ? 5 : -5 };
+  if (key.key === 'Escape' && context.fullscreen) return { action: 'fullscreen' };
   if (context.button || context.range) return null;
   if (key.code === 'Space' || key.key === ' ' || key.key.toLowerCase() === 'k') return { action: 'toggle' };
   if (key.key === 'ArrowRight' || key.key.toLowerCase() === 'l') return { action: 'seek-relative', value: 10 };
   if (key.key === 'ArrowLeft' || key.key.toLowerCase() === 'j') return { action: 'seek-relative', value: -10 };
   if (key.key.toLowerCase() === 'm') return { action: 'mute' };
-  if (key.key.toLowerCase() === 'f' || (key.key === 'Escape' && context.fullscreen)) return { action: 'fullscreen' };
+  if (key.key.toLowerCase() === 'f') return { action: 'fullscreen' };
   return null;
 }

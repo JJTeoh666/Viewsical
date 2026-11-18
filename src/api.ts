@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import type { AppSettings, Bootstrap, BrowseKind, BrowsePage, CommentPage, CommentSort, DownloadRequest, DownloadTask, MediaCacheKind, MediaCacheSummary, MediaItem, PlaybackMode, PlayerAction, PlayerBounds, PlayerState, PlayerUiContext, PlayerPresentation, PlayerOverlayAction, SessionSnapshot } from './types';
+import type { AppSettings, Bootstrap, BrowseKind, BrowsePage, CommentPage, CommentSort, DownloadRequest, DownloadTask, MediaCacheKind, MediaCacheSummary, MediaItem, PlaybackMode, PlayerAction, PlayerBounds, PlayerState, PlayerUiContext, PlayerPresentation, PlayerOverlayAction, SessionSnapshot, VideoRendererMode } from './types';
 
 export const isDesktop = '__TAURI_INTERNALS__' in window;
 
@@ -18,13 +18,21 @@ export const api = {
   completeSignIn: () => call<SessionSnapshot>('complete_sign_in'),
   session: () => call<SessionSnapshot>('session_state'),
   signOut: () => call<void>('sign_out'),
-  playVideo: (item: MediaItem, quality: number, startSeconds?: number, playbackMode?: PlaybackMode) => call<void>('play_video', { item, quality, startSeconds: startSeconds ?? null, playbackMode: playbackMode ?? null }),
+  playVideo: (item: MediaItem, quality: number, playbackMode?: PlaybackMode) => call<void>('play_video', { item, quality, playbackMode: playbackMode ?? null }),
   setPlaybackMode: (mode: PlaybackMode) => call<void>('set_playback_mode', { mode }),
   playerUiContext: (context: PlayerUiContext) => call<void>('player_ui_context', { context }),
   playLocal: (taskId: string) => call<void>('play_local', { taskId }),
   playerAction: (action: PlayerAction, value?: number) => call<void>('player_action', { action, value: value ?? null }),
-  playerBounds: (bounds: PlayerBounds) => call<void>('player_bounds', { bounds }),
+  playerBounds: (bounds: PlayerBounds) => call<void>('player_bounds', {
+    bounds,
+    // The time origin keeps the ordering monotonic across document reloads.
+    frame: Math.floor((performance.timeOrigin + performance.now()) * 1000),
+  }),
   player: () => call<PlayerState>('player_state'),
+  videoRendererMode: () => call<VideoRendererMode>('video_renderer_mode'),
+  videoSurfaceConfigure: (width: number, height: number) => call<void>('video_surface_configure', { width, height }),
+  videoSurfaceRelease: (generation: number, sequence: number) => call<void>('video_surface_release', { generation, sequence }),
+  videoSurfaceFailed: (generation: number) => call<void>('video_surface_failed', { generation }),
   playerPresentation: () => call<PlayerPresentation>('player_overlay_snapshot'),
   overlayAction: (loadId: number, action: PlayerOverlayAction, value?: number, mode?: PlaybackMode) => call<void>('player_overlay_action', { loadId, action, value: value ?? null, mode: mode ?? null }),
   retryPlayerOverlay: () => call<void>('retry_player_overlay'),

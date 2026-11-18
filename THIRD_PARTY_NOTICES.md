@@ -8,6 +8,7 @@ Viewsical bundles these independently maintained tools. Exact binary hashes and 
 | yt-dlp-ejs | Unlicense, with MIT/ISC components: https://github.com/yt-dlp/ejs |
 | Deno | MIT and bundled third-party licenses: https://github.com/denoland/deno/blob/main/LICENSE.md |
 | mpv Windows build | GPL; build recipes and corresponding source revisions: https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20261111 and https://github.com/mpv-player/mpv |
+| libmpv 0.42.0 | Official dynamically loaded Windows LGPL build. Source, build recipes, and archives are available at https://github.com/mpv-player/mpv/releases/tag/v0.42.0 |
 | FFmpeg / FFprobe | GPL enabled in the selected Gyan essentials build. Build information, corresponding sources and dependencies: https://www.gyan.dev/ffmpeg/builds/ and https://ffmpeg.org/legal.html |
 | Tauri | Apache-2.0 or MIT: https://github.com/tauri-apps/tauri |
 | Tauri single-instance plugin | Apache-2.0 or MIT: https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/single-instance |
