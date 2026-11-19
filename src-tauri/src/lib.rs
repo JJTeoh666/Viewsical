@@ -9,6 +9,7 @@ mod player_geometry;
 mod runtime;
 mod session;
 mod store;
+mod tray;
 #[cfg(windows)]
 mod video_renderer;
 #[cfg(windows)]
@@ -57,14 +58,14 @@ impl ShutdownSignals {
     }
 }
 
-/// Main-window closure is an app quit even when the isolated auth window is
-/// hidden. All quit routes enter this one bounded, idempotent drain.
+/// All quit routes enter this one bounded, idempotent drain.
 fn request_shutdown(handle: &tauri::AppHandle) {
     let signals = handle.state::<ShutdownSignals>();
     if !signals.try_start() {
         return;
     }
     window_state::remember(handle);
+    tray::hide_icon(handle);
     overlay::shutdown(handle);
     let Some(state) = handle.try_state::<AppState>() else {
         signals.finished.store(true, Ordering::SeqCst);
@@ -88,7 +89,8 @@ fn request_shutdown(handle: &tauri::AppHandle) {
             tokio::join!(
                 state.downloads.shutdown(),
                 state.player.shutdown(&handle),
-                state.cache.shutdown()
+                state.cache.shutdown(),
+                state.gateway.shutdown_worker()
             );
             if let Err(error) = state.sessions.shutdown(&handle).await {
                 tracing::warn!(category=%error.code,"Remembered sign-in could not be refreshed during shutdown");
@@ -210,17 +212,7 @@ fn desktop_builder() -> tauri::Builder<tauri::Wry> {
         // Register first: duplicate installed/portable launches must exit before
         // creating another WebView2 environment for the same saved profile.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if app
-                .try_state::<ShutdownSignals>()
-                .is_some_and(|s| s.started.load(Ordering::SeqCst))
-            {
-                return;
-            }
-            if let Some(main) = app.get_webview_window("main") {
-                let _ = main.unminimize();
-                let _ = main.show();
-                let _ = main.set_focus();
-            }
+            tray::show_main_window(app);
         }))
 }
 
@@ -265,6 +257,7 @@ pub fn run() {
                             let state=handle.state::<AppState>();
                             state.player.invalidate_session(&handle).await;
                             state.downloads.invalidate_session(&handle).await;
+                            state.gateway.warm_worker(&handle).await;
                             if state.sessions.snapshot().generation==transition.generation {
                                 let _=state.store.clear_private_history();
                                 state.store.set_account_partition(state.sessions.snapshot().status=="connected");
@@ -276,6 +269,10 @@ pub fn run() {
                 }
             });
             let restore_handle=handle.clone();
+            let worker_handle=handle.clone();
+            tauri::async_runtime::spawn(async move {
+                worker_handle.state::<AppState>().gateway.warm_worker(&worker_handle).await;
+            });
             tauri::async_runtime::spawn(async move {
                 let state=restore_handle.state::<AppState>();
                 if let Err(error)=state.sessions.restore_saved_session(&restore_handle,&state.gateway).await {
@@ -291,7 +288,7 @@ pub fn run() {
             youtube::browse,youtube::cancel_browse,
             comments::video_comments,comments::cancel_comments,
             media_cache::cache_summary,media_cache::cache_configure,media_cache::cache_clear,
-            player::set_playback_mode,player::player_ui_context,player::play_video,player::play_local,player::player_action,player::player_bounds,player::player_state,player::player_overlay_snapshot,player::player_overlay_action,player::retry_player_overlay,
+            player::set_playback_mode,player::player_ui_context,player::player_queue_prefetch,player::play_video,player::play_local,player::player_action,player::player_bounds,player::player_state,player::player_overlay_snapshot,player::player_overlay_action,player::retry_player_overlay,
             video_surface::video_renderer_mode, video_surface::video_surface_configure, video_surface::video_surface_release, video_surface::video_surface_failed,
             downloads::enqueue_download,downloads::download_action])
         .build(tauri::generate_context!()).expect("Could not start Viewsical");
@@ -323,7 +320,9 @@ pub fn run() {
                 ..
             } if label == "main" => {
                 api.prevent_close();
-                request_shutdown(handle);
+                if !tray::try_hide_on_close(handle) {
+                    request_shutdown(handle);
+                }
             }
             tauri::RunEvent::ExitRequested { api, .. }
                 if !handle

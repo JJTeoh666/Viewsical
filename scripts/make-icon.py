@@ -1,24 +1,31 @@
-"""Generate Viewsical's cropped rounded Windows and UI icons from supplied artwork."""
+"""Generate Viewsical's rounded Windows and UI icons from the square artwork."""
 from pathlib import Path
 from PIL import Image, ImageDraw
 
 project = Path(__file__).resolve().parents[1]
-source = Image.open(project / "resources/branding/source-artwork.png").convert("RGBA")
-side = 600
-# Center on the red circle/strokes, rather than the asymmetric canvas/brushes.
-red = Image.new("L", source.size)
-red.putdata([255 if r > 180 and g > 18 and r > g * 1.45 and r > b * 1.5 else 0 for r, g, b, _ in source.getdata()])
-bounds = red.getbbox()
-if bounds is None:
-    raise ValueError("The supplied artwork has no red play/circle strokes")
-center_x, center_y = (bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2
-left, top = round(center_x - side / 2), round(center_y - side / 2)
-image = source.crop((left, top, left + side, top + side)).resize((1024, 1024), Image.Resampling.LANCZOS)
-mask = Image.new("L", image.size)
-ImageDraw.Draw(mask).rounded_rectangle((0, 0, 1023, 1023), radius=210, fill=255)
-image.putalpha(mask)
+with Image.open(project / "resources/branding/source-artwork.png") as source:
+    artwork = source.convert("RGB")
+
+side = artwork.width
+if artwork.height != side:
+    raise ValueError("The icon artwork must be square")
+
+mask = Image.new("L", artwork.size)
+ImageDraw.Draw(mask).rounded_rectangle((0, 0, side - 1, side - 1), radius=round(side * 0.22), fill=255)
+
+
+def icon_at_size(size: int) -> Image.Image:
+    dimensions = (size, size)
+    image = artwork.resize(dimensions, Image.Resampling.LANCZOS)
+    # Average edge coverage without Lanczos ringing in the transparent corners.
+    image.putalpha(mask.resize(dimensions, Image.Resampling.BOX))
+    return image
+
+
 icons = project / "src-tauri/icons"
 icons.mkdir(exist_ok=True)
-image.resize((512, 512), Image.Resampling.LANCZOS).save(icons / "icon.png")
-image.resize((256, 256), Image.Resampling.LANCZOS).save(icons / "icon.ico", format="ICO", sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
-image.resize((256, 256), Image.Resampling.LANCZOS).save(project / "src/assets/app-icon.png")
+icon_at_size(512).save(icons / "icon.png")
+ui_icon = icon_at_size(256)
+ui_icon.save(project / "src/assets/app-icon.png")
+smaller_icons = [icon_at_size(size) for size in [16, 24, 32, 48, 64, 128]]
+ui_icon.save(icons / "icon.ico", append_images=smaller_icons)

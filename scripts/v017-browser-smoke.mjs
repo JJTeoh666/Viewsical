@@ -62,12 +62,17 @@ try {
       { id: 'cached-video', videoId: 'video', title: 'Fixture cached video', mode: 'video', quality: 720, bytes: 64 * MiB, lastAccessed: 1780000000, pinned: false },
       { id: 'playing-cache', videoId: 'playing', title: 'Fixture currently playing', mode: 'video', quality: 1080, bytes: 32 * MiB, lastAccessed: 1780000000, pinned: true },
     ] };
-    const session = { generation: 1, status: 'connected', label: 'Fixture listener', message: null };
+    const restore = new URLSearchParams(location.search).get('restore-session');
+    const session = { generation: 1, status: restore === null ? 'connected' : 'restoring', label: restore === null ? 'Fixture listener' : null, message: null };
     const settings = { theme: 'system', downloadDirectory: 'C:\\Fixture downloads', defaultQuality: 1080, volume: 80, muted: false, playbackRate: 1, alwaysAudioOnly: false };
     let player = { status: 'idle', video: null, position: 0, duration: 0, volume: 80, muted: false, speed: 1, quality: 1080, requestedQuality: 1080, qualities: [1080, 720, 480], error: null, errorCode: null, bufferedSeconds: 30, loadId: 0, playbackMode: 'video' };
     let callbackId = 0; const callbacks = new Map(); const listeners = new Map();
     const state = { calls: [], bounds: null, context: null, emit: (event, payload) => { for (const [id, listener] of listeners) if (listener.event === event) callbacks.get(listener.handler)?.({ event, id, payload }); } };
     state.endVideo = () => { player = {...player,status:'ended',position:player.duration}; state.emit('player-state',player); };
+    state.restoreSession = () => {
+      Object.assign(session, { status: 'connected', label: 'Fixture listener' });
+      state.emit('session-changed', { ...session });
+    };
     window.__fixture = state; state.cache = cacheData; state.session = session;
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: (_, id) => listeners.delete(id) };
     window.__TAURI_INTERNALS__ = {
@@ -78,10 +83,16 @@ try {
         state.calls.push({ command, args });
         if (command === 'plugin:event|listen') { const id = ++callbackId; listeners.set(id, args); return id; }
         if (command === 'plugin:event|unlisten') { listeners.delete(args.eventId); return; }
-        if (command === 'bootstrap') return { session, settings, downloads: [], history: [{ video: video(1), duration: video(1).duration, position: 52, updatedAt: Math.floor(Date.now() / 1000) }], tools: [] };
+        if (command === 'bootstrap') {
+          const snapshot = { ...session };
+          if (restore === 'during-bootstrap') await new Promise(resolve => { state.finishBootstrap = resolve; });
+          return { session: snapshot, settings, downloads: [], history: [{ video: video(1), duration: video(1).duration, position: 52, updatedAt: Math.floor(Date.now() / 1000) }], tools: [] };
+        }
         if (command === 'session_state') return session;
         if (command === 'browse') {
+          const status = session.status;
           await new Promise(resolve => setTimeout(resolve, 35));
+          if (args.kind === 'home' && status === 'restoring') return { items: [{ ...video(1), title: 'Public Home video' }], nextCursor: null };
           if (args.kind === 'home') { const offset = Number(args.cursor ?? 0); return { items: [...(offset === 0 ? [playlist] : []), ...Array.from({ length: 24 }, (_, i) => video(i + offset + 1))], nextCursor: offset < 48 ? String(offset+24) : null }; }
           if (args.kind === 'playlists') return { items: [playlist], nextCursor: null };
           if (args.kind === 'playlist') { const offset = Number(args.cursor ?? 0); if (state.failNextPlaylist && offset > 0) { state.failNextPlaylist = false; throw {message: 'Fixture network interruption'}; } return { items: Array.from({ length: 24 }, (_, i) => video(i+offset+1)), nextCursor: offset < 96 ? String(offset+24) : null, collection }; }
@@ -118,9 +129,34 @@ try {
       },
     };
   });
-  await page.goto('http://127.0.0.1:1423', { waitUntil: 'load' });
   const calls = async kind => page.evaluate(name => window.__fixture.calls.filter(call=>call.command==='browse'&&call.args.kind===name),kind);
   const waitCount = async (kind,count) => page.waitForFunction(({kind,count})=>window.__fixture.calls.filter(call=>call.command==='browse'&&call.args.kind===kind).length===count,{kind,count});
+  await page.goto('http://127.0.0.1:1423/?restore-session');
+  const publicVideo = page.getByRole('button', { name: 'Play Public Home video', exact: true });
+  await publicVideo.waitFor();
+  check('Saved session shows checking status while public Home loads', await page.getByRole('status').filter({ hasText: 'Checking YouTube sign-in' }).isVisible() && await page.getByRole('button', { name: /^(Sign in|Account sign-in)$/ }).count() === 0);
+  await page.evaluate(() => window.__fixture.restoreSession());
+  await page.getByRole('button', { name: 'Connected account' }).waitFor();
+  await page.getByRole('button', { name: 'Open Evening listening', exact: true }).waitFor();
+  await page.evaluate(() => window.__fixture.restoreSession());
+  await page.waitForTimeout(100);
+  check('Same-generation sign-in refreshes Home once with a personalized feed', await publicVideo.count() === 0 && (await calls('home')).length === 2);
+
+  await page.goto('http://127.0.0.1:1423/?restore-session=during-bootstrap');
+  await page.waitForFunction(() => typeof window.__fixture.finishBootstrap === 'function');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.evaluate(() => {
+    window.__fixture.restoreSession();
+    window.__fixture.finishBootstrap();
+  });
+  await page.getByRole('button', { name: 'Manage sign-in', exact: true }).waitFor();
+  await waitCount('home', 1);
+  check('Sign-in during bootstrap refreshes Home without leaving Settings', await page.getByRole('heading', { name: 'Settings', exact: true }).isVisible());
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await page.getByRole('button', { name: 'Open Evening listening', exact: true }).waitFor();
+  check('Home reuses the updated feed when the user returns', (await calls('home')).length === 1);
+
+  await page.goto('http://127.0.0.1:1423', { waitUntil: 'load' });
   await page.getByRole('button',{name:'Open Evening listening',exact:true}).waitFor();
   await page.waitForTimeout(180);
   check('Outer document scrollbar is hidden without disabling overflow', await page.locator('html').evaluate(el=>getComputedStyle(el).scrollbarWidth==='none'&&getComputedStyle(el).overflowY!=='hidden'));

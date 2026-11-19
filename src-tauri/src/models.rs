@@ -102,6 +102,8 @@ pub struct AppSettings {
     pub always_audio_only: bool,
     #[serde(default = "crate::normalization::enabled_by_default")]
     pub normalize_audio: bool,
+    #[serde(default)]
+    pub close_to_tray: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

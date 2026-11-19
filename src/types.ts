@@ -37,6 +37,7 @@ export interface AppSettings {
   playbackRate: number;
   alwaysAudioOnly: boolean;
   normalizeAudio: boolean;
+  closeToTray: boolean;
 }
 export interface PlayerState {
   status: string;
@@ -107,7 +108,7 @@ export type Page = { kind: BrowseKind | 'downloads' | 'history' | 'settings' | '
 
 export const defaultSettings: AppSettings = {
   theme: 'system', downloadDirectory: '', defaultQuality: 1080,
-  volume: 80, muted: false, playbackRate: 1, alwaysAudioOnly: false, normalizeAudio: true,
+  volume: 80, muted: false, playbackRate: 1, alwaysAudioOnly: false, normalizeAudio: true, closeToTray: false,
 };
 export const defaultPlayer: PlayerState = {
   status: 'idle', video: null, position: 0, duration: 0, volume: 80,

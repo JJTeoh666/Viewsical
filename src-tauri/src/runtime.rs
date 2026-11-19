@@ -59,7 +59,7 @@ impl ToolPaths {
         let resource = app.path().resource_dir().unwrap_or_default().join("tools");
         let development = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools");
         Self {
-            root: if cfg!(debug_assertions) && development.join("yt-dlp.exe").exists() {
+            root: if cfg!(debug_assertions) && development.join("python/python.exe").is_file() {
                 development
             } else {
                 resource
@@ -106,8 +106,16 @@ impl ToolPaths {
             ))
         }
     }
-    pub fn yt_dlp(&self) -> AppResult<PathBuf> {
-        self.locate("yt-dlp.exe")
+    pub fn youtube_python(&self) -> AppResult<tokio::process::Command> {
+        self.locate("python/packages/yt_dlp/__init__.py")?;
+        let mut command = tokio::process::Command::new(self.locate("python/python.exe")?);
+        command.args(["-I", "-B", "-u", "-X", "utf8"]);
+        Ok(command)
+    }
+    pub fn youtube_cli(&self) -> AppResult<tokio::process::Command> {
+        let mut command = self.youtube_python()?;
+        command.args(["-m", "yt_dlp"]);
+        Ok(command)
     }
     pub fn deno(&self) -> AppResult<PathBuf> {
         self.locate("deno.exe")
@@ -127,7 +135,7 @@ impl ToolPaths {
             .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
             .unwrap_or_default();
         [
-            ("yt-dlp", "yt-dlp.exe"),
+            ("yt-dlp", "python/packages/yt_dlp/__init__.py"),
             ("Deno", "deno.exe"),
             ("mpv", "mpv.exe"),
             ("FFmpeg", "ffmpeg.exe"),
@@ -136,7 +144,8 @@ impl ToolPaths {
         .iter()
         .map(|(name, file)| ToolStatus {
             name: (*name).into(),
-            available: self.root.join(file).is_file(),
+            available: self.root.join(file).is_file()
+                && (*name != "yt-dlp" || self.root.join("python/python.exe").is_file()),
             version: manifest
                 .as_array()
                 .and_then(|rows| rows.iter().find(|row| row["file"] == *file))

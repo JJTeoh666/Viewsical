@@ -4,7 +4,8 @@ Viewsical bundles these independently maintained tools. Exact binary hashes and 
 
 | Component | License and source |
 | --- | --- |
-| yt-dlp | Unlicense (Windows standalone binaries also bundle Python and dependencies with their own licenses): https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE and https://github.com/yt-dlp/yt-dlp#license |
+| yt-dlp | Unlicense: https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE |
+| CPython | Python Software Foundation license: https://www.python.org/downloads/release/python-31317/ |
 | yt-dlp-ejs | Unlicense, with MIT/ISC components: https://github.com/yt-dlp/ejs |
 | Deno | MIT and bundled third-party licenses: https://github.com/denoland/deno/blob/main/LICENSE.md |
 | mpv Windows build | GPL; build recipes and corresponding source revisions: https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20261111 and https://github.com/mpv-player/mpv |

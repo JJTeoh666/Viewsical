@@ -1,4 +1,6 @@
 fn main() {
+    println!("cargo:rerun-if-changed=icons");
+
     let manifest = tauri_build::AppManifest::new().commands(&[
         "bootstrap",
         "save_settings",
@@ -17,6 +19,7 @@ fn main() {
         "cache_clear",
         "set_playback_mode",
         "player_ui_context",
+        "player_queue_prefetch",
         "play_video",
         "play_local",
         "player_action",

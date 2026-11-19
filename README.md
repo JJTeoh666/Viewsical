@@ -1,6 +1,6 @@
 # Viewsical
 
-Viewsical 0.1.7 (formerly TubeDesk) is a Windows desktop video player built with Tauri 2, Rust, React and TypeScript. Search YouTube, play videos in an embedded native player, cache media for replay, read comments, manage resumable video/audio downloads, and play completed media offline.
+Viewsical (formerly TubeDesk) is a Windows desktop video player built with Tauri 2, Rust, React and TypeScript. Search YouTube, play videos in an embedded native player, cache media for replay, read comments, manage resumable video/audio downloads, and play completed media offline.
 
 ## Run
 
@@ -30,6 +30,8 @@ Audio normalization is on by default under **Settings → Playback → Normalize
 
 The app remembers whether its main window was maximized and restores that choice at startup. Fullscreen and minimization do not replace it.
 
+Closing the window quits by default. Turn on **Settings → Window → Minimize to tray on close** to keep playback and downloads running. Click the tray icon to restore the window or right-click it to choose **Quit Viewsical**.
+
 Scrolling a watch page keeps the visible portion of the video playing, clipped below the fixed header. It retains its size, playback position and controls. Search uses a separate circular submit button; Home remains available in the sidebar and through the app logo. Home and individual playlist pages show **Back to top** after scrolling, with reduced-motion support and space reserved beside the mini-player or above the bottom player.
 
 Press **↑ / ↓** to change app volume by **5 percentage points**, including while paused or using the bottom player. Text fields, menus and dialogs keep their normal arrow navigation. Volume stays separate from mute and normalization. Opening an item starts it from the beginning, including from History and Downloads. After the last queued item finishes, dragging the progress bar resumes that item at the chosen position, and Play restarts it from the beginning.
@@ -38,7 +40,7 @@ Video and audio use the same React controls and Lucide icons. The in-page render
 
 ## Media cache and comments
 
-Playback saves full audio and video components in background after the native player is ready. This uses additional network data. Only complete files with validated tracks and duration become reusable cache entries. Replay opens matching local components before resolving another online source, including after restarting Viewsical. Incomplete transfers are disposable; explicit Downloads remain the way to keep files permanently.
+Playback can save full audio and video components in the background for items with a known duration of five minutes or less. Caching starts once playback has buffered enough media and stops when seeking or buffering. Only complete files with validated tracks and duration become reusable cache entries. Replay opens matching local components before resolving another online source, including after restarting Viewsical. Explicit Downloads can save longer items for offline playback.
 
 **Settings → Media cache** shows audio, video and in-progress storage. Turn automatic caching on/off, choose a size limit (2 GB by default), clear audio/video/all media, or remove an individual file. Older unused media is evicted as space is needed. Files currently playing are removed after the player releases them. Clearing media cache preserves downloads, sign-in and local history. Account changes clear account-scoped media.
 
@@ -48,7 +50,7 @@ The watch page shows read-only YouTube comments, with Top/Newest order, Load mor
 
 **Sign in** opens Google's real sign-in page in a dedicated app WebView. Complete sign-in yourself, then return to Viewsical and select **I've signed in**. Viewsical validates the session before enabling subscriptions, subscribed channels and account playlists. It never asks for a Google password in its own interface and does not import external browser cookies.
 
-Sign-in is remembered automatically across closing, restarting Windows, and app updates. Persistent cookies stay in the dedicated WebView2 profile. Session-only cookies have an encrypted, current-Windows-user DPAPI fallback with restricted file permissions. On restart Viewsical checks the saved session automatically; signing out removes the remembered session. A temporary network/provider failure retains previously saved sign-in and reports that validation could not finish.
+Sign-in is remembered automatically across closing, restarting Windows, and app updates. Persistent cookies stay in the dedicated WebView2 profile. Session-only cookies have an encrypted, current-Windows-user DPAPI fallback with restricted file permissions. On restart Viewsical checks the saved session and refreshes Home when sign-in completes. Signing out removes the remembered session. A temporary network/provider failure retains previously saved sign-in and reports that validation could not finish.
 
 Google may reject embedded sign-in with “This browser or app may not be secure.” Viewsical reports this limitation; anonymous search, playback and downloads remain available. A blocked login is not represented as a connected account. Account library access is read-only. Signing out clears the app's account session and private local history; downloaded files remain available. Local playback history is distinct from YouTube watch history; Viewsical does not intentionally report remote watch progress.
 
@@ -61,7 +63,7 @@ npm ci
 .\scripts\setup-tools.ps1
 ```
 
-`scripts/setup-tools.ps1` downloads pinned yt-dlp, Deno, mpv, libmpv, FFmpeg and FFprobe. It verifies available upstream archive checksums and records every binary SHA-256 in `tools/manifest.json`. The standalone yt-dlp release includes its EJS solver support. Updating the adapter is an explicit source/build change; there is no silent runtime self-update.
+`scripts/setup-tools.ps1` downloads pinned yt-dlp, Deno, mpv, libmpv, FFmpeg and FFprobe. It verifies available upstream archive checksums and records every binary SHA-256 in `tools/manifest.json`. Viewsical bundles an isolated Windows Python runtime with pinned yt-dlp and EJS wheels. A persistent worker resolves playback sources. Browsing and downloads use separate jobs, and queue prefetch resolves only the next loaded item. Updates to the adapter are explicit source and build changes.
 
 ### Run the desktop app with a test profile
 

@@ -34,13 +34,52 @@ function FetchNotice([string]$Url,[string]$Name) {
     CopyNotice $source $Name
 }
 $ytVersion = '2026.10.26'
-$ytUrl = "https://github.com/yt-dlp/yt-dlp/releases/download/$ytVersion/yt-dlp.exe"
-$ytFile = Fetch $ytUrl 'yt-dlp.exe'
-$ytChecksums = Fetch "https://github.com/yt-dlp/yt-dlp/releases/download/$ytVersion/SHA2-256SUMS" 'yt-dlp-SHA2-256SUMS'
-$ytHash = ((Get-Content -LiteralPath $ytChecksums | Where-Object { $_ -match '\s+yt-dlp\.exe$' }) -split '\s+')[0]
-if ($ytHash -ne 'f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d') { throw 'The yt-dlp published checksum differs from the pinned release.' }
-Verify $ytFile $ytHash
-CopyVerified $ytFile (Join-Path $toolRoot 'yt-dlp.exe') $ytHash
+$pythonVersion = '3.13.17'
+$pythonFile = "python-$pythonVersion-embed-amd64.zip"
+$pythonUrl = "https://www.python.org/ftp/python/$pythonVersion/$pythonFile"
+$pythonHash = '9e35319bffedab8b36ad44d8f377cb4f1733bcec257a0b6d04d94f01486ddb38'
+$pythonArchive = Fetch $pythonUrl $pythonFile
+Verify $pythonArchive $pythonHash
+$wheelLock = Join-Path $PSScriptRoot 'youtube-wheels.json'
+$wheels = @(Get-Content -LiteralPath $wheelLock -Raw | ConvertFrom-Json)
+$wheelArchives = foreach ($wheel in $wheels) {
+    $file = Fetch $wheel.url ([System.IO.Path]::GetFileName(([uri]$wheel.url).AbsolutePath))
+    Verify $file $wheel.sha256
+    $file
+}
+$pythonRoot = Join-Path $toolRoot 'python'
+$runtimeStamp = Join-Path $pythonRoot 'bundle.lock'
+$stamp = "$pythonHash $((Get-FileHash -LiteralPath $wheelLock).Hash)"
+if ($Force -or !(Test-Path -LiteralPath $runtimeStamp) -or (Get-Content -LiteralPath $runtimeStamp -Raw).Trim() -ne $stamp) {
+    $stage = Join-Path $toolRoot ("python-stage-" + [guid]::NewGuid())
+    try {
+        Expand-Archive -LiteralPath $pythonArchive -DestinationPath $stage
+        $packages = Join-Path $stage 'packages'
+        New-Item -ItemType Directory -Path $packages -Force | Out-Null
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        foreach ($wheelArchive in $wheelArchives) {
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($wheelArchive, $packages)
+        }
+        @('python313.zip', '.', 'packages') | Set-Content -LiteralPath (Join-Path $stage 'python313._pth') -Encoding ascii
+        & (Join-Path $stage 'python.exe') -I -B -c "import yt_dlp, yt_dlp_ejs, requests, brotli; from yt_dlp.version import __version__; assert __version__ == '$ytVersion'"
+        if ($LASTEXITCODE -ne 0) { throw 'The bundled Python environment failed its import check.' }
+        $stamp | Set-Content -LiteralPath (Join-Path $stage 'bundle.lock') -Encoding ascii
+        if (Test-Path -LiteralPath $pythonRoot) {
+            $prior = Get-Item -LiteralPath $pythonRoot -Force
+            if ($prior.FullName -ne [System.IO.Path]::GetFullPath($pythonRoot) -or ($prior.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or (Get-ChildItem -LiteralPath $pythonRoot -Recurse -Force -Attributes ReparsePoint | Select-Object -First 1)) { throw 'Unexpected bundled Python directory.' }
+            Remove-Item -LiteralPath $prior.FullName -Recurse -Force
+        }
+        Move-Item -LiteralPath $stage -Destination $pythonRoot
+    } finally {
+        if (Test-Path -LiteralPath $stage) {
+            $staged = Get-Item -LiteralPath $stage -Force
+            if ($staged.FullName -eq [System.IO.Path]::GetFullPath($stage) -and !($staged.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                Remove-Item -LiteralPath $staged.FullName -Recurse -Force
+            }
+        }
+    }
+}
+CopyNotice (Join-Path $pythonRoot 'LICENSE.txt') 'Python-LICENSE.txt'
 
 $denoVersion = '2.9.8'
 $denoUrl = "https://github.com/denoland/deno/releases/download/v$denoVersion/deno-x86_64-pc-windows-msvc.zip"
@@ -106,8 +145,7 @@ foreach ($binary in @('ffmpeg.exe','ffprobe.exe')) {
     CopyVerified $found.FullName (Join-Path $toolRoot $binary) $ffmpegHashes[$binary]
 }
 
-# The aggregate notice covers yt-dlp's PyInstaller dependencies and the JS
-# libraries bundled by EJS; exact EJS version comes from the pinned pyproject.
+# Preserve upstream notices for the pinned library and EJS package.
 FetchNotice "https://raw.githubusercontent.com/yt-dlp/yt-dlp/$ytVersion/LICENSE" 'yt-dlp-LICENSE.txt'
 FetchNotice "https://raw.githubusercontent.com/yt-dlp/yt-dlp/$ytVersion/THIRD_PARTY_LICENSES.txt" 'yt-dlp-THIRD_PARTY_LICENSES.txt'
 FetchNotice 'https://raw.githubusercontent.com/yt-dlp/ejs/0.8.0/LICENSE' 'yt-dlp-ejs-LICENSE.txt'
@@ -122,11 +160,11 @@ $sources = @'
 # Bundled tool notices and source locations
 
 Viewsical redistributes these Windows x64 builds unchanged. Upstream license texts
-are alongside this file; the yt-dlp aggregate includes its bundled dependencies.
+are alongside this file. Python wheel notices are in python/packages/*.dist-info.
 
 ## yt-dlp 2026.10.26 and yt-dlp-ejs 0.8.0
 
-- Binary release: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.26
+- Python wheel: https://pypi.org/project/yt-dlp/2026.10.26/
 - Corresponding source: https://github.com/yt-dlp/yt-dlp/tree/2026.10.26
 - Source archive: https://github.com/yt-dlp/yt-dlp/archive/refs/tags/2026.10.26.tar.gz
 - Bundled dependency notices: https://github.com/yt-dlp/yt-dlp/blob/2026.10.26/THIRD_PARTY_LICENSES.txt
@@ -135,6 +173,11 @@ are alongside this file; the yt-dlp aggregate includes its bundled dependencies.
 - EJS source archive: https://github.com/yt-dlp/ejs/archive/refs/tags/0.8.0.tar.gz
 - EJS is Unlicense; bundled Meriyah ISC and Astring MIT notices are in yt-dlp-THIRD_PARTY_LICENSES.txt.
 - See yt-dlp-LICENSE.txt, yt-dlp-ejs-LICENSE.txt, and yt-dlp-THIRD_PARTY_LICENSES.txt.
+
+## CPython 3.13.17
+
+- Windows x64 embeddable runtime: https://www.python.org/downloads/release/python-31317/
+- See Python-LICENSE.txt.
 
 ## Deno 2.9.8
 
@@ -173,7 +216,7 @@ are alongside this file; the yt-dlp aggregate includes its bundled dependencies.
 
 tools/manifest.json records pinned archive and executable SHA-256 hashes,
 including the unchanged mpv DLL. setup-tools.ps1 verifies downloaded archives
-against pinned hashes, checks yt-dlp/Deno/FFmpeg published checksum files, and
+against pinned hashes, checks Python wheel hashes and Deno/FFmpeg published checksum files, and
 verifies every shipped executable/DLL. Matching cached archives and installed
 binaries are reused on subsequent runs.
 '@
@@ -182,7 +225,8 @@ if ($Force -or !(Test-Path -LiteralPath $sourcePath) -or (Get-Content -LiteralPa
     $sources | Set-Content -LiteralPath $sourcePath -Encoding utf8
 }
 $manifest = @(
-    @{ name='yt-dlp'; version=$ytVersion; source=$ytUrl; file='yt-dlp.exe'; archiveSha256=(Get-FileHash $ytFile).Hash.ToLowerInvariant() },
+    @{ name='yt-dlp'; version=$ytVersion; source=$wheels[0].url; file='python/packages/yt_dlp/__init__.py'; archiveSha256=$wheels[0].sha256 },
+    @{ name='Python'; version=$pythonVersion; source=$pythonUrl; file='python/python.exe'; archiveSha256=$pythonHash },
     @{ name='Deno'; version=$denoVersion; source=$denoUrl; file='deno.exe'; archiveSha256=(Get-FileHash $denoZip).Hash.ToLowerInvariant() },
     @{ name='mpv'; version='20261111-git-bcde6b93cc'; source=$mpvUrl; file='mpv.exe'; archiveSha256=(Get-FileHash $mpvArchive).Hash.ToLowerInvariant() },
     @{ name='libmpv'; version=$libmpvVersion; source=$libmpvUrl; file='libmpv-2.dll'; archiveSha256=$libmpvArchiveHash },

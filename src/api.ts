@@ -5,6 +5,15 @@ import type { AppSettings, Bootstrap, BrowseKind, BrowsePage, CommentPage, Comme
 
 export const isDesktop = '__TAURI_INTERNALS__' in window;
 
+type QueuePrefetch = {
+  queueId: string;
+  selectedEntryId: string;
+  nextEntryId: string;
+  videoId: string;
+  quality: number;
+  mode: PlaybackMode;
+};
+
 function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isDesktop) return Promise.reject(new Error('Open the Viewsical desktop app to use this feature.'));
   return invoke<T>(command, args);
@@ -21,6 +30,7 @@ export const api = {
   playVideo: (item: MediaItem, quality: number, playbackMode?: PlaybackMode) => call<void>('play_video', { item, quality, playbackMode: playbackMode ?? null }),
   setPlaybackMode: (mode: PlaybackMode) => call<void>('set_playback_mode', { mode }),
   playerUiContext: (context: PlayerUiContext) => call<void>('player_ui_context', { context }),
+  playerQueuePrefetch: (loadId: number, next: QueuePrefetch | null) => call<void>('player_queue_prefetch', { loadId, next }),
   playLocal: (taskId: string) => call<void>('play_local', { taskId }),
   playerAction: (action: PlayerAction, value?: number) => call<void>('player_action', { action, value: value ?? null }),
   playerBounds: (bounds: PlayerBounds) => call<void>('player_bounds', {

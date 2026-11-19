@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'env.ps1')
 Set-Location $projectRoot
 if (!(Test-Path -LiteralPath 'node_modules')) { & npm ci; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
-if (!(Test-Path -LiteralPath 'tools\manifest.json') -or !(Test-Path -LiteralPath 'tools\libmpv-2.dll')) { & (Join-Path $PSScriptRoot 'setup-tools.ps1') }
+if (!(Test-Path -LiteralPath 'tools\manifest.json') -or !(Test-Path -LiteralPath 'tools\libmpv-2.dll') -or !(Test-Path -LiteralPath 'tools\python\bundle.lock')) { & (Join-Path $PSScriptRoot 'setup-tools.ps1') }
 & node scripts/collect-licenses.mjs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if (!$SkipChecks) {
@@ -31,7 +31,16 @@ $output = Join-Path $projectRoot 'artifacts'
 $portable = Join-Path $output 'Viewsical-portable'
 New-Item -ItemType Directory -Path $portable -Force | Out-Null
 Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $portable 'Viewsical.exe') -Force
-Copy-Item -LiteralPath 'tools' -Destination $portable -Recurse -Force
+$portableTools = Join-Path $portable 'tools'
+New-Item -ItemType Directory -Path $portableTools -Force | Out-Null
+$bundledTools = @('python','licenses','manifest.json','deno.exe','mpv.exe','libmpv-2.dll','d3dcompiler_43.dll','ffmpeg.exe','ffprobe.exe')
+foreach ($tool in $bundledTools) {
+    Copy-Item -LiteralPath (Join-Path 'tools' $tool) -Destination $portableTools -Recurse -Force
+}
+$oldExtractor = Join-Path $portableTools 'yt-dlp.exe'
+if (Test-Path -LiteralPath $oldExtractor -PathType Leaf) {
+    Remove-Item -LiteralPath $oldExtractor -Force
+}
 Copy-Item -LiteralPath 'THIRD_PARTY_NOTICES.md','README.md' -Destination $portable -Force
 Copy-Item -LiteralPath 'docs' -Destination $portable -Recurse -Force
 # The web overlay replaces the obsolete Lua resources in older portable builds.

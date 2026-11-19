@@ -78,7 +78,7 @@ impl DownloadManager {
         request: DownloadRequest,
     ) -> AppResult<DownloadTask> {
         validate_request(&request)?;
-        self.tools.yt_dlp()?;
+        self.tools.youtube_python()?;
         self.tools.deno()?;
         self.tools.ffmpeg()?;
         self.tools.ffprobe()?;
@@ -234,7 +234,7 @@ impl DownloadManager {
                 .unwrap_or_else(|| format_selector(task)),
             Err(_) => format_selector(task),
         };
-        let mut command = Command::new(self.tools.yt_dlp()?);
+        let mut command = self.tools.youtube_cli()?;
         command.args([
             "--ignore-config",
             "--no-plugin-dirs",

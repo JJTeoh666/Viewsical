@@ -43,6 +43,7 @@ impl Store {
                 playback_rate: 1.,
                 always_audio_only: false,
                 normalize_audio: true,
+                close_to_tray: false,
             },
         })
     }
@@ -190,6 +191,7 @@ mod tests {
         let legacy = r#"{"theme":"dark","downloadDirectory":"C:\\Downloads","defaultQuality":720,"volume":37.0,"muted":true,"playbackRate":1.25}"#;
         let settings: AppSettings = serde_json::from_str(legacy).unwrap();
         assert!(!settings.always_audio_only);
+        assert!(!settings.close_to_tray);
         assert!(settings.normalize_audio);
         assert_eq!(settings.theme, "dark");
         assert_eq!(settings.volume, 37.);

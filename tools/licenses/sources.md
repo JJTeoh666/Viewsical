@@ -1,11 +1,11 @@
 # Bundled tool notices and source locations
 
 Viewsical redistributes these Windows x64 builds unchanged. Upstream license texts
-are alongside this file; the yt-dlp aggregate includes its bundled dependencies.
+are alongside this file. Python wheel notices are in python/packages/*.dist-info.
 
 ## yt-dlp 2026.10.26 and yt-dlp-ejs 0.8.0
 
-- Binary release: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.26
+- Python wheel: https://pypi.org/project/yt-dlp/2026.10.26/
 - Corresponding source: https://github.com/yt-dlp/yt-dlp/tree/2026.10.26
 - Source archive: https://github.com/yt-dlp/yt-dlp/archive/refs/tags/2026.10.26.tar.gz
 - Bundled dependency notices: https://github.com/yt-dlp/yt-dlp/blob/2026.10.26/THIRD_PARTY_LICENSES.txt
@@ -14,6 +14,11 @@ are alongside this file; the yt-dlp aggregate includes its bundled dependencies.
 - EJS source archive: https://github.com/yt-dlp/ejs/archive/refs/tags/0.8.0.tar.gz
 - EJS is Unlicense; bundled Meriyah ISC and Astring MIT notices are in yt-dlp-THIRD_PARTY_LICENSES.txt.
 - See yt-dlp-LICENSE.txt, yt-dlp-ejs-LICENSE.txt, and yt-dlp-THIRD_PARTY_LICENSES.txt.
+
+## CPython 3.13.17
+
+- Windows x64 embeddable runtime: https://www.python.org/downloads/release/python-31317/
+- See Python-LICENSE.txt.
 
 ## Deno 2.9.8
 
@@ -52,6 +57,6 @@ are alongside this file; the yt-dlp aggregate includes its bundled dependencies.
 
 tools/manifest.json records pinned archive and executable SHA-256 hashes,
 including the unchanged mpv DLL. setup-tools.ps1 verifies downloaded archives
-against pinned hashes, checks yt-dlp/Deno/FFmpeg published checksum files, and
+against pinned hashes, checks Python wheel hashes and Deno/FFmpeg published checksum files, and
 verifies every shipped executable/DLL. Matching cached archives and installed
 binaries are reused on subsequent runs.

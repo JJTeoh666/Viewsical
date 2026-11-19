@@ -1,5 +1,13 @@
 # Changelog
 
+## Viewsical 0.1.11 — 19 November 2026
+
+- Add a rounded Windows and app icon.
+- Keep yt-dlp ready in a bundled Python worker to reduce playback lookup time. Prefetch the next loaded queue item near the end of playback.
+- Limit new background replay caching to media with a known duration of five minutes or less. Offline downloads still support longer media.
+- Add **Settings → Window → Minimize to tray on close**. The menu offers **Open Viewsical** and **Quit Viewsical**. Closing the window still quits by default.
+- Show when a saved YouTube sign-in is being checked and refresh Home automatically when sign-in completes.
+
 ## Viewsical 0.1.10 — 18 November 2026
 
 - Wait for Viewsical and its playback helper to exit during an install or uninstall.

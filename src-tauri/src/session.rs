@@ -354,7 +354,9 @@ impl SessionManager {
         match result {
             Ok(()) => {
                 self.remembered.store(true, Ordering::SeqCst);
-                self.capture_remembered(app).await?;
+                if let Err(error) = self.capture_remembered(app).await {
+                    tracing::warn!(category = %error.code, "Could not update the saved session backup");
+                }
                 self.park(app);
                 Ok(self.update(app, "connected", None, false))
             }

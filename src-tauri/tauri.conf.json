@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Viewsical",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "identifier": "app.tubedesk.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -37,7 +37,15 @@
       "nsis"
     ],
     "resources": {
-      "../tools/": "tools/",
+      "../tools/python/": "tools/python/",
+      "../tools/licenses/": "tools/licenses/",
+      "../tools/manifest.json": "tools/manifest.json",
+      "../tools/deno.exe": "tools/deno.exe",
+      "../tools/mpv.exe": "tools/mpv.exe",
+      "../tools/libmpv-2.dll": "tools/libmpv-2.dll",
+      "../tools/d3dcompiler_43.dll": "tools/d3dcompiler_43.dll",
+      "../tools/ffmpeg.exe": "tools/ffmpeg.exe",
+      "../tools/ffprobe.exe": "tools/ffprobe.exe",
       "../resources/ytdlp-plugins/": "ytdlp-plugins/",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },

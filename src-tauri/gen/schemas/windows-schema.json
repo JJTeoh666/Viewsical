@@ -285,6 +285,12 @@
           "markdownDescription": "Allows only the bundled shared player overlay to read presentation state and send scoped playback actions."
         },
         {
+          "description": "Enables the player_queue_prefetch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-player-queue-prefetch",
+          "markdownDescription": "Enables the player_queue_prefetch command without any pre-configured scope."
+        },
+        {
           "description": "Enables the player_state command without any pre-configured scope.",
           "type": "string",
           "const": "allow-player-state",
@@ -427,6 +433,12 @@
           "type": "string",
           "const": "deny-player-bounds",
           "markdownDescription": "Denies the player_bounds command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the player_queue_prefetch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-player-queue-prefetch",
+          "markdownDescription": "Denies the player_queue_prefetch command without any pre-configured scope."
         },
         {
           "description": "Denies the player_state command without any pre-configured scope.",

@@ -25,6 +25,11 @@ use tokio_util::sync::CancellationToken;
 const DEFAULT_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 const MIN_LIMIT: u64 = 128 * 1024 * 1024;
 const MAX_LIMIT: u64 = 100 * 1024 * 1024 * 1024;
+const MAX_CACHE_DURATION_SECONDS: f64 = 300.;
+
+pub(crate) fn cacheable_duration(duration: Option<f64>) -> bool {
+    duration.is_some_and(|seconds| seconds > 0. && seconds <= MAX_CACHE_DURATION_SECONDS)
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -444,12 +449,8 @@ impl MediaCache {
         if self.closing.load(Ordering::SeqCst)
             || plan.protocol == "cache"
             || !plan.video_url.starts_with("https://")
+            || !cacheable_duration(plan.video.duration)
         {
-            return;
-        }
-        // Without an expected full duration a byte-limited/truncated output
-        // cannot be established as complete offline media.
-        if !plan.video.duration.is_some_and(|d| d.is_finite() && d > 0.) {
             return;
         }
         let snapshot = app.state::<AppState>().sessions.snapshot();
@@ -705,13 +706,18 @@ impl MediaCache {
         }
     }
     pub fn cancel_pending(&self, app: &AppHandle) {
-        {
-            let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-            for (_, token) in inner.jobs.values() {
-                token.cancel();
-            }
+        let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if inner.jobs.is_empty() {
+            return;
         }
+        for (_, token) in inner.jobs.values() {
+            token.cancel();
+        }
+        drop(inner);
         self.emit(app);
+    }
+    pub(crate) fn has_jobs(&self) -> bool {
+        !self.inner.lock().unwrap_or_else(|p| p.into_inner()).jobs.is_empty()
     }
     pub async fn shutdown(&self) {
         self.begin_shutdown();
@@ -871,6 +877,27 @@ pub async fn cache_clear(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_cache_requires_a_known_duration_of_at_most_five_minutes() {
+        assert!(cacheable_duration(Some(299.)));
+        assert!(cacheable_duration(Some(300.)));
+        for duration in [
+            None,
+            Some(0.),
+            Some(-1.),
+            Some(300.01),
+            Some(301.),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
+            assert!(
+                !cacheable_duration(duration),
+                "unexpected eligibility for {duration:?}"
+            );
+        }
+    }
+
     #[test]
     fn truncated_or_silent_components_never_become_offline_media() {
         let v = serde_json::json!({"streams":[{"codec_type":"video"}],"format":{"duration":"20"}});

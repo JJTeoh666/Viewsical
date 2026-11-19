@@ -37,11 +37,12 @@
 
 ; Use the normal window-close path so the app can drain its work. A portable
 ; copy or another program with the same file name must stay running.
-!macro ViewsicalRequestClose executablePath
+!macro ViewsicalRequestClose executablePath productName
   GetFullPathName $R1 "${executablePath}"
   StrCpy $5 0
   ${Do}
-    System::Call 'user32::FindWindowExW(p 0, p r5, p 0, p 0) p .r5'
+    ; Leave the tray, renderer, and Windows message windows for the app to close.
+    System::Call 'user32::FindWindowExW(p 0, p r5, p 0, w "${productName}") p .r5'
     ${If} $5 = 0
       ${ExitDo}
     ${EndIf}
@@ -52,7 +53,12 @@
         System::Call 'kernel32::QueryFullProcessImageNameW(p r7, i 0, w .r8, *i ${NSIS_MAX_STRLEN}) i .r9'
         ${If} $9 != 0
         ${AndIf} "$8" == "$R1"
-          System::Call 'user32::PostMessageW(p r5, i ${WM_CLOSE}, p 0, p 0)'
+          ; The tray-enabled app consumes this marker when handling WM_CLOSE.
+          System::Call 'user32::SetPropW(p r5, w "Viewsical.QuitForMaintenance", p 1)'
+          System::Call 'user32::PostMessageW(p r5, i ${WM_CLOSE}, p 0, p 0) i .r0'
+          ${If} $0 = 0
+            System::Call 'user32::RemovePropW(p r5, w "Viewsical.QuitForMaintenance")'
+          ${EndIf}
         ${EndIf}
         System::Call 'kernel32::CloseHandle(p r7)'
       ${EndIf}
@@ -77,7 +83,7 @@
 
   viewsical_request_close_${checkId}:
     DetailPrint "Waiting for ${productName} to finish closing..."
-    !insertmacro ViewsicalRequestClose "${executablePath}"
+    !insertmacro ViewsicalRequestClose "${executablePath}" "${productName}"
 
   viewsical_wait_${checkId}:
     ; Hiding the window does not release the executable. Wait for the main
@@ -87,7 +93,7 @@
     StrCmp $1 32 0 viewsical_check_failed_${checkId}
     IfSilent viewsical_end_locked_${checkId}
     StrCmp $PassiveMode 1 viewsical_end_locked_${checkId}
-    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${productName} is still closing. Close it from its window or end the ${productName} task in Task Manager, then select Retry." IDRETRY viewsical_wait_${checkId}
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${productName} is still closing. Quit from its tray icon or end the ${productName} task in Task Manager, then select Retry." IDRETRY viewsical_wait_${checkId}
 
   viewsical_end_locked_${checkId}:
     SetErrorLevel 1
@@ -103,6 +109,7 @@
 
 ; Clear the retired 0.1.5 Lua renderer from the install directory.
 !macro NSIS_HOOK_POSTINSTALL
+  Delete "$INSTDIR\tools\yt-dlp.exe"
   Delete "$INSTDIR\player\tubedesk_osc.lua"
   RMDir "$INSTDIR\player"
 !macroend

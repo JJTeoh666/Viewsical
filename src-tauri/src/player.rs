@@ -1,6 +1,6 @@
 use crate::{
     downloads::{hide_command, valid_video_id, ProcessJob},
-    media_cache::CacheLease,
+    media_cache::{cacheable_duration, CacheLease},
     models::*,
     runtime::ToolPaths,
     store::Store,
@@ -25,6 +25,31 @@ use tokio::{
     process::{Child, Command},
     sync::{oneshot, Mutex as AsyncMutex},
 };
+use tokio_util::sync::CancellationToken;
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuePrefetch {
+    queue_id: String,
+    selected_entry_id: String,
+    next_entry_id: String,
+    video_id: String,
+    quality: u32,
+    mode: String,
+}
+
+struct PrefetchAttempt {
+    target: QueuePrefetch,
+    load_id: u64,
+    cancel: CancellationToken,
+    started: bool,
+}
+
+#[derive(Default)]
+struct QueueBackground {
+    next: Option<PrefetchAttempt>,
+    running: bool,
+}
 #[cfg(windows)]
 type PipeWriter = tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>;
 #[cfg(not(windows))]
@@ -272,6 +297,8 @@ pub struct PlayerManager {
     retired_leases: Mutex<Vec<(SourceToken, CacheLease)>>,
     ended_source: Mutex<Option<SourceToken>>,
     pending_cache: Mutex<Option<(SourceToken, PlaybackPlan)>>,
+    background: Mutex<QueueBackground>,
+    network_source: AtomicBool,
 }
 impl PlayerManager {
     pub fn new(tools: Arc<ToolPaths>, store: Arc<Store>) -> Self {
@@ -320,6 +347,8 @@ impl PlayerManager {
             retired_leases: Mutex::new(Vec::new()),
             ended_source: Mutex::new(None),
             pending_cache: Mutex::new(None),
+            background: Mutex::new(QueueBackground::default()),
+            network_source: AtomicBool::new(false),
         }
     }
     pub fn snapshot(&self) -> PlayerState {
@@ -391,6 +420,7 @@ impl PlayerManager {
             s.error = Some(error.message.clone());
             s.error_code = Some(error.code.clone());
         }
+        self.cancel_background(app);
         self.publish(app);
         tracing::warn!(load_id=self.load.load(Ordering::SeqCst),category=%error.code,"Playback operation failed");
         let manager = self.clone();
@@ -455,7 +485,7 @@ impl PlayerManager {
             requested_mode
         };
         app.state::<AppState>().gateway.cancel("playback-source");
-        app.state::<AppState>().cache.cancel_pending(app);
+        self.cancel_background(app);
         self.save_history();
         let load = self.load.fetch_add(1, Ordering::SeqCst) + 1;
         let generation = app.state::<AppState>().sessions.snapshot().generation;
@@ -650,7 +680,7 @@ impl PlayerManager {
             });
         }
         let network = plan.protocol != "cache";
-        let warming = network.then(|| plan.clone());
+        let warming = (network && cacheable_duration(plan.video.duration)).then(|| plan.clone());
         let external_audio = if options.mode == "video" {
             plan.audio_url.clone()
         } else {
@@ -783,6 +813,7 @@ impl PlayerManager {
         external_audio: Option<String>,
     ) -> AppResult<()> {
         self.check_load(app, options)?;
+        self.cancel_background(app);
         let token = SourceToken {
             load: options.load,
             attempt: self.attempt.fetch_add(1, Ordering::SeqCst) + 1,
@@ -791,6 +822,7 @@ impl PlayerManager {
         self.restarted.store(false, Ordering::SeqCst);
         self.loaded.store(false, Ordering::SeqCst);
         self.cache_paused.store(false, Ordering::SeqCst);
+        self.network_source.store(file_options["cache"] == "yes", Ordering::SeqCst);
         *self.audio.lock().map_err(AppError::io)? = AudioState {
             expected_external: external_audio.is_some(),
             ..AudioState::default()
@@ -867,7 +899,7 @@ impl PlayerManager {
                 )
             })?;
         app.state::<AppState>().gateway.cancel("playback-source");
-        app.state::<AppState>().cache.cancel_pending(app);
+        self.cancel_background(app);
         self.save_history();
         let mode = if task.mode == "audio" || self.store.settings()?.always_audio_only {
             "audio".into()
@@ -959,7 +991,7 @@ impl PlayerManager {
             .clone()
             .filter(|source| mode == "audio" || source.has_video);
         app.state::<AppState>().gateway.cancel("playback-source");
-        app.state::<AppState>().cache.cancel_pending(app);
+        self.cancel_background(app);
         let load = self.load.fetch_add(1, Ordering::SeqCst) + 1;
         let generation = app.state::<AppState>().sessions.snapshot().generation;
         self.source_generation.store(generation, Ordering::SeqCst);
@@ -1211,17 +1243,21 @@ impl PlayerManager {
                 "--cache=yes",
                 "--cache-pause=yes",
                 "--cache-pause-initial=yes",
-                "--cache-pause-wait=3",
                 "--cache-secs=30",
                 "--demuxer-readahead-secs=30",
                 "--demuxer-max-bytes=128MiB",
                 "--demuxer-max-back-bytes=32MiB",
             ])
+            .arg(format!("--cache-pause-wait={}", startup_buffer_target()))
             .arg(format!("--volume={}", state.volume))
             .arg(format!("--mute={}", if state.muted { "yes" } else { "no" }))
             .arg(format!("--speed={}", state.speed))
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        #[cfg(debug_assertions)]
+        if let Ok(port) = std::env::var("VIEWSICAL_TEST_STREAM_PROXY_PORT").unwrap_or_default().parse::<u16>() {
+            command.arg(format!("--http-proxy=http://127.0.0.1:{port}"));
+        }
         hide_command(&mut command);
         let mut child = command.spawn().map_err(|_| {
             AppError::new("player_start", "The player could not start. Check mpv in Settings.")
@@ -1416,12 +1452,50 @@ impl PlayerManager {
     }
 
     fn maybe_warm(self: &Arc<Self>, app: &AppHandle) {
-        let ready = self
-            .audio
-            .lock()
-            .map(|audio| audio.ready(false))
-            .unwrap_or(false);
-        if !self.restarted.load(Ordering::SeqCst) || !ready {
+        let Ok(mut background) = self.background.lock() else { return };
+        if background.running
+            || (background.next.as_ref().is_none_or(|next| next.started)
+                && self.pending_cache.lock().is_ok_and(|pending| pending.is_none()))
+        {
+            return;
+        }
+        let token = self.token();
+        let state = self.snapshot();
+        let remaining = state.duration - state.position;
+        let state_ref = app.state::<AppState>();
+        if self.closing.load(Ordering::SeqCst)
+            || state.load_id != token.load
+            || !self.restarted.load(Ordering::SeqCst)
+            || self.cache_paused.load(Ordering::SeqCst)
+            || state.status != "playing"
+            || state.position <= 0.
+            || !remaining.is_finite()
+            || remaining <= 0.
+            || (self.network_source.load(Ordering::SeqCst)
+                && state.buffered_seconds + 0.25 < remaining.min(8.))
+            || state_ref.cache.has_jobs()
+        {
+            return;
+        }
+        if let Some(next) = background.next.as_mut().filter(|next| {
+            next.load_id == token.load && !next.started && remaining / state.speed.max(0.25) <= 20.
+        }) {
+            next.started = true;
+            let target = next.target.clone();
+            let cancellation = next.cancel.clone();
+            let generation = state_ref.sessions.snapshot().generation;
+            background.running = true;
+            let app = app.clone();
+            let manager = self.clone();
+            tauri::async_runtime::spawn(async move {
+                let result = app.state::<AppState>().gateway
+                    .prefetch(&app, target.video_id, target.quality, &target.mode, generation, cancellation)
+                    .await;
+                tracing::info!(load_id=token.load, ready=matches!(result, Ok(true)), "Queue source prefetch finished");
+                if let Ok(mut background) = manager.background.lock() {
+                    background.running = false;
+                }
+            });
             return;
         }
         let plan = self.pending_cache.lock().ok().and_then(|mut pending| {
@@ -1435,7 +1509,39 @@ impl PlayerManager {
             }
         });
         if let Some(plan) = plan {
-            app.state::<AppState>().cache.schedule(app, plan);
+            state_ref.cache.schedule(app, plan);
+        }
+    }
+
+    fn set_queue_prefetch(&self, load_id: u64, target: Option<QueuePrefetch>) {
+        if let Ok(mut background) = self.background.lock() {
+            if self.token().load != load_id
+                || background.next.as_ref().is_some_and(|next| {
+                    next.load_id == load_id && Some(&next.target) == target.as_ref()
+                })
+            {
+                return;
+            }
+            if let Some(next) = background.next.take() {
+                next.cancel.cancel();
+            }
+            background.next = target.map(|target| PrefetchAttempt {
+                target, load_id, cancel: CancellationToken::new(), started: false,
+            });
+        }
+    }
+
+    fn cancel_background(&self, app: &AppHandle) {
+        if let Ok(mut background) = self.background.lock() {
+            if let Some(next) = background.next.as_mut() {
+                if next.started {
+                    next.cancel.cancel();
+                }
+            }
+            if let Ok(mut pending) = self.pending_cache.lock() {
+                pending.take();
+            }
+            app.state::<AppState>().cache.cancel_pending(app);
         }
     }
     fn audio_check_active(&self, token: SourceToken) -> bool {
@@ -1685,8 +1791,12 @@ impl PlayerManager {
                     }
                     "paused-for-cache" => {
                         if let Some(paused) = data.as_bool() {
+                            let was_playing = self.snapshot().status == "playing";
                             self.cache_paused.store(paused, Ordering::SeqCst);
                             self.set_play_status(app);
+                            if paused && was_playing {
+                                self.cancel_background(app);
+                            }
                             tracing::info!(
                                 load_id = self.load.load(Ordering::SeqCst),
                                 buffering = paused,
@@ -1715,6 +1825,7 @@ impl PlayerManager {
                             });
                             if emit {
                                 self.publish_progress(app);
+                                self.maybe_warm(app);
                             }
                         }
                     }
@@ -1994,6 +2105,7 @@ impl PlayerManager {
                 let pos = value
                     .ok_or_else(|| AppError::new("invalid_value", "A seek position is required."))?
                     .clamp(0., state.duration.max(0.));
+                self.cancel_background(app);
                 self.restarted.store(false, Ordering::SeqCst);
                 self.send(json!(["seek", pos, "absolute+exact"])).await?;
                 self.change(app, |s| s.position = pos);
@@ -2044,7 +2156,7 @@ impl PlayerManager {
             }
             "stop" => {
                 app.state::<AppState>().gateway.cancel("playback-source");
-                app.state::<AppState>().cache.cancel_pending(app);
+                self.cancel_background(app);
                 self.save_history();
                 self.load.fetch_add(1, Ordering::SeqCst);
                 self.attempt.fetch_add(1, Ordering::SeqCst);
@@ -2233,6 +2345,7 @@ impl PlayerManager {
         }
     }
     pub async fn invalidate_session(&self, app: &AppHandle) {
+        self.cancel_background(app);
         if self.local_path.lock().map(|p| p.is_some()).unwrap_or(false) {
             return;
         }
@@ -2261,6 +2374,11 @@ impl PlayerManager {
     }
     pub fn begin_shutdown(&self) {
         self.closing.store(true, Ordering::SeqCst);
+        if let Ok(background) = self.background.lock() {
+            if let Some(next) = &background.next {
+                next.cancel.cancel();
+            }
+        }
         self.load.fetch_add(1, Ordering::SeqCst);
         self.attempt.fetch_add(1, Ordering::SeqCst);
     }
@@ -2332,6 +2450,16 @@ fn normalized_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
     result.sort();
     result
 }
+fn startup_buffer_target() -> u8 {
+    #[cfg(debug_assertions)]
+    if let Ok(value) = std::env::var("VIEWSICAL_TEST_STARTUP_BUFFER") {
+        if let Ok(seconds @ 1..=3) = value.parse::<u8>() {
+            return seconds;
+        }
+    }
+    3
+}
+
 fn source_options(
     start: f64,
     mode: &str,
@@ -2490,6 +2618,27 @@ fn ensure_control_window(label: &str) -> AppResult<()> {
 }
 
 #[tauri::command]
+pub fn player_queue_prefetch(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    load_id: u64,
+    next: Option<QueuePrefetch>,
+) -> AppResult<()> {
+    if window.label() != "main" {
+        return Err(AppError::new("forbidden", "Queue prefetch is available in the main window."));
+    }
+    if let Some(next) = &next {
+        validated_mode(&next.mode)?;
+        validate_quality(next.quality)?;
+        if !valid_video_id(&next.video_id) {
+            return Err(AppError::new("invalid_video", "Choose a YouTube video to play."));
+        }
+    }
+    state.player.set_queue_prefetch(load_id, next);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn play_video(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -2595,6 +2744,7 @@ mod tests {
             playback_rate: 1.,
             always_audio_only: false,
             normalize_audio: true,
+            close_to_tray: false,
         };
         let old = preference_commands(&settings);
         settings.volume = 37.;

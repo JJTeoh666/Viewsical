@@ -9,6 +9,17 @@ use crate::{
 };
 use serde_json::Value;
 use std::sync::atomic::Ordering;
+use tokio_util::sync::CancellationToken;
+
+struct ResolveOptions<'a> {
+    generation: u64,
+    mode: &'a str,
+    quality: u32,
+    force_refresh: bool,
+    prefer_hls: bool,
+    persistent: bool,
+    cancellation: CancellationToken,
+}
 
 #[derive(Debug, Clone)]
 pub struct PlaybackPlan {
@@ -51,6 +62,49 @@ impl YoutubeGateway {
         force_refresh: bool,
         prefer_hls: bool,
     ) -> AppResult<PlaybackPlan> {
+        let generation = self.sessions.snapshot().generation;
+        let request = self.begin("playback-source");
+        let _resolution = tokio::select! {
+            biased;
+            _ = request.token.cancelled() => return Err(AppError::new("cancelled", "The request was cancelled.")),
+            lock = self.resolving.lock() => lock,
+        };
+        self.resolve_source(app, item, ResolveOptions {
+            generation, mode, quality, force_refresh, prefer_hls, persistent: true,
+            cancellation: request.token.clone(),
+        }).await
+    }
+
+    pub(crate) async fn prefetch(
+        &self,
+        app: &tauri::AppHandle,
+        id: String,
+        quality: u32,
+        mode: &str,
+        generation: u64,
+        cancellation: CancellationToken,
+    ) -> AppResult<bool> {
+        let _prefetch = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Ok(false),
+            lock = self.prefetching.lock() => lock,
+        };
+        let item = MediaItem { id, ..Default::default() };
+        self.resolve_source(app, &item, ResolveOptions {
+            generation, mode, quality, force_refresh: false, prefer_hls: false,
+            persistent: false, cancellation,
+        }).await.map(|plan| source_fresh(plan.expires_at, now()))
+    }
+
+    async fn resolve_source(
+        &self,
+        app: &tauri::AppHandle,
+        item: &MediaItem,
+        options: ResolveOptions<'_>,
+    ) -> AppResult<PlaybackPlan> {
+        let ResolveOptions {
+            generation, mode, quality, force_refresh, prefer_hls, persistent, cancellation,
+        } = options;
         if !matches!(mode, "video" | "audio") {
             return Err(AppError::new(
                 "invalid_mode",
@@ -58,18 +112,14 @@ impl YoutubeGateway {
             ));
         }
         let video = normalize_video_ref(&item.url).or_else(|_| normalize_video_ref(&item.id))?;
-        let generation = self.sessions.snapshot().generation;
         let cap = quality.clamp(144, 4320);
         let key = format!(
             "{}:{generation}:{mode}:{}:{prefer_hls}:2026.10.26",
             video.video_id,
             if mode == "audio" { 0 } else { cap }
         );
-        let request = self.begin("playback-source");
-        // One solver invocation at a time. A superseded request cannot commit a source.
-        let _resolution = self.resolving.lock().await;
         ensure_generation(generation, self.sessions.snapshot().generation)?;
-        if request.token.is_cancelled() || self.closing.load(Ordering::SeqCst) {
+        if cancellation.is_cancelled() || self.closing.load(Ordering::SeqCst) {
             return Err(AppError::new("cancelled", "The request was cancelled."));
         }
         if force_refresh {
@@ -98,13 +148,14 @@ impl YoutubeGateway {
             source_selector(mode, cap, prefer_hls),
         ];
         let anonymous = self
-            .run(
+            .run_extraction(
                 app,
                 &url,
                 args.clone(),
                 None,
                 generation,
-                request.token.clone(),
+                cancellation.clone(),
+                persistent,
             )
             .await;
         let json = match anonymous {
@@ -115,13 +166,14 @@ impl YoutubeGateway {
                 ) && self.sessions.snapshot().status == "connected" =>
             {
                 let cookies = self.sessions.cookie_snapshot(app).await?;
-                self.run(
+                self.run_extraction(
                     app,
                     &url,
                     args,
                     cookies.as_ref(),
                     generation,
-                    request.token.clone(),
+                    cancellation.clone(),
+                    persistent,
                 )
                 .await?
             }
@@ -147,10 +199,10 @@ impl YoutubeGateway {
         tracing::info!(video_id=%video.video_id, mode, protocol=%plan.protocol, format=%plan.format_id, separate_audio=plan.audio_url.is_some(),
             quality=plan.selected_quality, "Playback source selected");
         ensure_generation(generation, self.sessions.snapshot().generation)?;
-        if request.token.is_cancelled() {
+        let mut cache = self.sources.lock().unwrap_or_else(|p| p.into_inner());
+        if cancellation.is_cancelled() || self.closing.load(Ordering::SeqCst) {
             return Err(AppError::new("cancelled", "The request was cancelled."));
         }
-        let mut cache = self.sources.lock().unwrap_or_else(|p| p.into_inner());
         cache
             .retain(|_, p| source_fresh(p.expires_at, now()) && p.session_generation == generation);
         if source_fresh(plan.expires_at, now()) {

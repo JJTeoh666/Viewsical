@@ -37,6 +37,8 @@ pub struct YoutubeGateway {
     pub(super) closing: AtomicBool,
     pub(super) sources: Mutex<HashMap<String, PlaybackPlan>>,
     pub(super) resolving: tokio::sync::Mutex<()>,
+    pub(super) prefetching: tokio::sync::Mutex<()>,
+    pub(super) worker: tokio::sync::Mutex<Option<super::process::PlaybackWorker>>,
 }
 impl YoutubeGateway {
     pub fn new(tools: Arc<ToolPaths>, sessions: Arc<SessionManager>) -> Self {
@@ -47,6 +49,8 @@ impl YoutubeGateway {
             closing: AtomicBool::new(false),
             sources: Mutex::new(HashMap::new()),
             resolving: tokio::sync::Mutex::new(()),
+            prefetching: tokio::sync::Mutex::new(()),
+            worker: tokio::sync::Mutex::new(None),
         }
     }
 

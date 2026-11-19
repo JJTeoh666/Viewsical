@@ -85,7 +85,7 @@ def check_resume(folder: Path, data: bytes, honor_range: bool) -> dict[str, obje
         output.with_suffix(".mp4.part").write_bytes(data[:partial_size])
         run(
             [
-                str(TOOLS / "yt-dlp.exe"),
+                str(TOOLS / "python/python.exe"), "-I", "-B", "-u", "-X", "utf8", "-m", "yt_dlp",
                 "--ignore-config",
                 "--no-plugin-dirs",
                 "--no-update",
@@ -124,7 +124,7 @@ def check_resume(folder: Path, data: bytes, honor_range: bool) -> dict[str, obje
 
 
 def main() -> None:
-    for name in ("ffmpeg.exe", "yt-dlp.exe"):
+    for name in ("ffmpeg.exe", "python/python.exe"):
         if not (TOOLS / name).is_file():
             raise FileNotFoundError(f"Missing tools/{name}. Run scripts/setup-tools.ps1")
     scratch_root = (ROOT / ".tools" / "test-data").resolve()

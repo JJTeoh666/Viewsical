@@ -6,6 +6,7 @@ tools/*.exe
 tools/*.dll
 tools/*.zip
 tools/mpv/
+tools/python/
 artifacts/
 *.log
 *.tsbuildinfo

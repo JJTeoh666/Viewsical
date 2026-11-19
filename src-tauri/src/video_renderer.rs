@@ -235,6 +235,7 @@ impl Mpv {
                 | "ytdl"
                 | "tls-verify"
                 | "network-timeout"
+                | "http-proxy"
                 | "cache"
                 | "cache-pause"
                 | "cache-pause-initial"
