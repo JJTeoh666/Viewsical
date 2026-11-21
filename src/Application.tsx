@@ -114,6 +114,7 @@ export default function Application() {
   const applyPlayer = useCallback((snapshot: PlayerState) => setPlayer({ ...defaultPlayer, ...snapshot }), []);
   const changeQueue = useCallback((update: QueueState | ((current: QueueState) => QueueState)) => { const next = typeof update === 'function' ? update(queueRef.current) : update; queueRef.current = next; setQueue(next); }, []);
   const updateDownload = useCallback((task: DownloadTask) => setDownloads(current => [task, ...current.filter(value => value.id !== task.id)].sort((a, b) => b.createdAt - a.createdAt)), []);
+  const removeDownload = useCallback((id: string) => setDownloads(current => current.filter(task => task.id !== id)), []);
   const refreshBootstrap = useCallback(async () => {
     const startingSession = sessionRef.current;
     try {
@@ -445,7 +446,7 @@ export default function Application() {
           {page.kind !== 'channel' && browseKinds.has(page.kind) && browseContent()}
           {page.kind === 'localPlaylists' && <LocalPlaylists onOpen={collection => navigate({ kind: 'localPlaylist', query: collection.id, collection })} />}
           {page.kind === 'localPlaylist' && page.query && <><button className="back-button local-playlist-back" onClick={() => navigate({ kind: 'localPlaylists' })}><ArrowLeft size={17} />Local playlists</button><LocalPlaylist key={page.query} id={page.query} queue={queue} onStart={startPlaylistEntry} onDownload={setDownloadItem} /></>}
-          {page.kind === 'downloads' && <DownloadsPanel tasks={downloads} onPlay={playDownloaded} onDownload={setDownloadItem} onSearch={() => searchRef.current?.focus()} onError={showError} />}
+          {page.kind === 'downloads' && <DownloadsPanel tasks={downloads} onPlay={playDownloaded} onDownload={setDownloadItem} onDeleted={removeDownload} onSearch={() => searchRef.current?.focus()} onError={showError} />}
           {page.kind === 'history' && <HistoryPanel entries={history} onPlay={play} onDownload={setDownloadItem} />}
           {page.kind === 'settings' && <SettingsPanel settings={settings} session={session} checkingAccount={checkingAccount} tools={tools} onSave={next => void saveSettings(next)} onSignIn={() => void openSignIn()} onSignOut={signOut} onClearHistory={() => setClearConfirm(true)} onError={showError} />}
         </div>}

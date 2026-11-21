@@ -285,6 +285,12 @@
           "markdownDescription": "Enables the local_playlists command without any pre-configured scope."
         },
         {
+          "description": "Enables the missing_downloads command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-missing-downloads",
+          "markdownDescription": "Enables the missing_downloads command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_sign_in command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-sign-in",
@@ -517,6 +523,12 @@
           "type": "string",
           "const": "deny-local-playlists",
           "markdownDescription": "Denies the local_playlists command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the missing_downloads command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-missing-downloads",
+          "markdownDescription": "Denies the missing_downloads command without any pre-configured scope."
         },
         {
           "description": "Denies the open_sign_in command without any pre-configured scope.",

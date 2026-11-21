@@ -266,6 +266,14 @@ impl Store {
         db.execute("INSERT INTO downloads(id,json,created_at) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET json=excluded.json",params![task.id,serde_json::to_string(task).map_err(AppError::io)?,task.created_at]).map_err(AppError::io)?;
         Ok(())
     }
+    pub fn remove_download(&self, id: &str) -> AppResult<()> {
+        self.db
+            .lock()
+            .map_err(AppError::io)?
+            .execute("DELETE FROM downloads WHERE id=?1", [id])
+            .map_err(AppError::io)?;
+        Ok(())
+    }
 }
 
 fn write_settings(db: &Connection, settings: &AppSettings) -> AppResult<()> {

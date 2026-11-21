@@ -1,5 +1,11 @@
 # Changelog
 
+## Viewsical 0.1.19 — 21 November 2026
+
+- Open each downloaded file in its actual folder and select it in File Explorer.
+- Hide missing files from Downloads and refresh the list while the page is open.
+- Delete completed downloads from the Downloads page after confirmation.
+
 ## Viewsical 0.1.18 — 21 November 2026
 
 - Show one View full playlist action on playlist cards.

@@ -177,33 +177,6 @@ async fn save_settings(
 async fn clear_history(state: tauri::State<'_, AppState>) -> AppResult<()> {
     state.store.clear_history()
 }
-#[tauri::command]
-async fn reveal_download(task_id: String, state: tauri::State<'_, AppState>) -> AppResult<()> {
-    let task = state
-        .store
-        .downloads()?
-        .into_iter()
-        .find(|task| task.id == task_id)
-        .ok_or_else(|| AppError::new("not_found", "This download no longer exists."))?;
-    let path = task
-        .output_path
-        .ok_or_else(|| AppError::new("not_ready", "Wait for this download to finish."))?;
-    if !std::path::Path::new(&path).is_file() {
-        return Err(AppError::new(
-            "not_found",
-            "This file was moved or deleted.",
-        ));
-    }
-    #[cfg(windows)]
-    {
-        std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{path}"))
-            .spawn()
-            .map_err(AppError::io)?;
-    }
-    Ok(())
-}
-
 fn desktop_builder() -> tauri::Builder<tauri::Wry> {
     let builder = tauri::Builder::default();
     // Isolated development smoke tests can coexist with the user's installed
@@ -291,7 +264,7 @@ pub fn run() {
             tracing::info!("Viewsical initialized");
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![bootstrap,save_settings,clear_history,reveal_download,
+        .invoke_handler(tauri::generate_handler![bootstrap,save_settings,clear_history,
             session::open_sign_in,session::complete_sign_in,session::sign_out,session::session_state,
             youtube::browse,youtube::cancel_browse,youtube::watch::watch_details,youtube::watch::rate_video,
             youtube::account::channel_subscription,youtube::account::set_channel_subscription,
@@ -304,7 +277,7 @@ pub fn run() {
             player::set_playback_mode,player::player_ui_context,player::player_queue_prefetch,player::play_video,player::play_local,player::player_action,player::player_bounds,player::player_state,player::player_overlay_snapshot,player::player_overlay_action,player::retry_player_overlay,
             player::player_subtitle_tracks,player::set_player_subtitle,
             video_surface::video_renderer_mode, video_surface::video_surface_configure, video_surface::video_surface_release, video_surface::video_surface_failed,
-            downloads::enqueue_download,downloads::download_action])
+            downloads::enqueue_download,downloads::download_action,downloads::missing_downloads,downloads::reveal_download])
         .build(tauri::generate_context!()).expect("Could not start Viewsical");
     app.run(move |handle, event| {
         if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {

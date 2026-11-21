@@ -2,6 +2,7 @@ use crate::{models::*, runtime::ToolPaths, store::Store, AppState};
 use serde_json::Value;
 use std::{
     collections::HashMap,
+    io::ErrorKind,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -28,6 +29,7 @@ pub struct DownloadManager {
     tools: Arc<ToolPaths>,
     store: Arc<Store>,
     jobs: Mutex<HashMap<String, Arc<RunningDownload>>>,
+    file_changes: Mutex<()>,
     slots: Arc<Semaphore>,
     closing: AtomicBool,
 }
@@ -53,6 +55,7 @@ impl DownloadManager {
             tools,
             store,
             jobs: Mutex::new(HashMap::new()),
+            file_changes: Mutex::new(()),
             slots: Arc::new(Semaphore::new(2)),
             closing: AtomicBool::new(false),
         }
@@ -70,6 +73,61 @@ impl DownloadManager {
             .into_iter()
             .find(|t| t.id == id)
             .ok_or_else(|| AppError::new("not_found", "This download is no longer in the library."))
+    }
+
+    fn missing(&self) -> AppResult<Vec<String>> {
+        Ok(self
+            .store
+            .downloads()?
+            .into_iter()
+            .filter(|task| task.status == "completed" && output_missing(task))
+            .map(|task| task.id)
+            .collect())
+    }
+
+    fn delete(&self, id: &str) -> AppResult<()> {
+        let _files = self.file_changes.lock().map_err(AppError::io)?;
+        let task = self.find(id)?;
+        let path = completed_output(&task)?;
+        if !path.is_absolute() || path.parent() != Some(Path::new(&task.destination)) {
+            return Err(AppError::new(
+                "invalid_path",
+                "This file is outside its download folder.",
+            ));
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if file_missing(&error) => {}
+            Err(error)
+                if error.kind() == ErrorKind::PermissionDenied
+                    || cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)) =>
+            {
+                return Err(AppError::new(
+                    "delete_denied",
+                    "Couldn't delete this file. If it is open in a player, close it and try again. Check the folder permissions if the problem continues.",
+                ));
+            }
+            Err(error) => return Err(AppError::io(error)),
+        }
+        self.store.remove_download(id)
+    }
+
+    fn reveal(&self, id: &str) -> AppResult<()> {
+        let task = self.find(id)?;
+        let path = completed_output(&task)?;
+        if output_missing(&task) {
+            return Err(AppError::new(
+                "not_found",
+                "This file was moved or deleted.",
+            ));
+        }
+        #[cfg(windows)]
+        return reveal_in_explorer(path);
+        #[cfg(not(windows))]
+        Err(AppError::new(
+            "unsupported",
+            "Showing the file in a folder requires Windows.",
+        ))
     }
 
     pub async fn enqueue(
@@ -170,6 +228,9 @@ impl DownloadManager {
 
     async fn run(&self, app: AppHandle, mut task: DownloadTask, running: Arc<RunningDownload>) {
         let result = self.run_inner(&app, &mut task, &running).await;
+        if result.is_ok() && task.status == "completed" {
+            return; // Completion was already published while holding the file lock.
+        }
         if running.cancel.is_cancelled() && task.status != "completed" {
             task.status = running
                 .outcome
@@ -393,16 +454,27 @@ impl DownloadManager {
         if running.cancel.is_cancelled() {
             return Ok(());
         }
-        let destination = publish_file(&canonical_output, Path::new(&task.destination), &task.id)?;
-        task.output_path = Some(destination.to_string_lossy().into());
-        task.status = "completed".into();
-        task.progress = 100.;
-        task.downloaded_bytes = std::fs::metadata(&destination)
-            .map(|m| m.len())
-            .unwrap_or(task.downloaded_bytes);
-        task.total_bytes = Some(task.downloaded_bytes);
-        task.error = None;
-        self.publish(app, task)?;
+        {
+            let _files = self.file_changes.lock().map_err(AppError::io)?;
+            let downloads = self.store.downloads()?;
+            let destination = publish_file(
+                &canonical_output,
+                Path::new(&task.destination),
+                &task.id,
+                &downloads,
+            )?;
+            task.output_path = Some(destination.to_string_lossy().into());
+            task.status = "completed".into();
+            task.progress = 100.;
+            task.downloaded_bytes = std::fs::metadata(&destination)
+                .map(|m| m.len())
+                .unwrap_or(task.downloaded_bytes);
+            task.total_bytes = Some(task.downloaded_bytes);
+            task.speed = None;
+            task.eta = None;
+            task.error = None;
+            self.publish(app, task)?;
+        }
         let _ = remove_work_dir(task);
         Ok(())
     }
@@ -707,17 +779,90 @@ fn remove_work_dir(task: &DownloadTask) -> AppResult<()> {
     }
     Ok(())
 }
-fn publish_file(source: &Path, destination: &Path, id: &str) -> AppResult<PathBuf> {
+fn completed_output(task: &DownloadTask) -> AppResult<&Path> {
+    if task.status != "completed" {
+        return Err(AppError::new(
+            "not_ready",
+            "Wait for this download to finish.",
+        ));
+    }
+    task.output_path
+        .as_deref()
+        .map(Path::new)
+        .ok_or_else(|| AppError::new("not_found", "This file was moved or deleted."))
+}
+
+fn file_missing(error: &std::io::Error) -> bool {
+    matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory)
+}
+
+fn output_missing(task: &DownloadTask) -> bool {
+    let Some(path) = task.output_path.as_deref() else {
+        return true;
+    };
+    match std::fs::metadata(path) {
+        Ok(metadata) => !metadata.is_file(),
+        Err(error) => file_missing(&error),
+    }
+}
+
+#[cfg(windows)]
+fn reveal_in_explorer(path: &Path) -> AppResult<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::{
+        core::PCWSTR,
+        Win32::{
+            System::Com::{
+                CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
+            },
+            UI::Shell::{SHOpenFolderAndSelectItems, SHParseDisplayName},
+        },
+    };
+
+    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // The blocking worker owns the COM initialization and the Shell item ID.
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            .ok()
+            .map_err(AppError::io)?;
+        let mut item = std::ptr::null_mut();
+        let result = SHParseDisplayName(PCWSTR(path.as_ptr()), None, &mut item, 0, None)
+            .and_then(|()| SHOpenFolderAndSelectItems(item, None, 0));
+        CoTaskMemFree(Some(item.cast()));
+        CoUninitialize();
+        result.map_err(|_| {
+            AppError::new(
+                "reveal_failed",
+                "Windows couldn't open the folder for this download.",
+            )
+        })
+    }
+}
+
+fn publish_file(
+    source: &Path,
+    destination: &Path,
+    id: &str,
+    downloads: &[DownloadTask],
+) -> AppResult<PathBuf> {
+    // A re-download must not reuse a filename still associated with a missing file.
+    let occupied = |path: &Path| {
+        path.exists()
+            || downloads.iter().any(|task| {
+                task.status == "completed"
+                    && task.output_path.as_deref().map(Path::new) == Some(path)
+            })
+    };
     let name = source
         .file_name()
         .ok_or_else(|| AppError::new("invalid_output", "The output filename is missing."))?;
     let mut output = destination.join(name);
-    if output.exists() {
+    if occupied(&output) {
         let stem = source.file_stem().unwrap_or_default().to_string_lossy();
         let ext = source.extension().unwrap_or_default().to_string_lossy();
         output = destination.join(format!("{} [{}].{}", stem, &id[..8], ext));
     }
-    if output.exists() {
+    if occupied(&output) {
         return Err(AppError::new("file_exists", "A file with this name already exists. Choose another folder or rename the existing file."));
     }
     std::fs::rename(source, &output).map_err(|_| AppError::new("publish", "The file passed validation but could not be moved into your download folder. Free some space and resume to retry."))?;
@@ -934,13 +1079,59 @@ pub async fn download_action(
     task_id: String,
     action: String,
 ) -> AppResult<()> {
+    if action == "delete" {
+        let downloads = state.downloads.clone();
+        return tokio::task::spawn_blocking(move || downloads.delete(&task_id))
+            .await
+            .map_err(AppError::io)?;
+    }
     state.downloads.action(&app, &task_id, &action).await
+}
+
+#[tauri::command]
+pub async fn missing_downloads(state: State<'_, AppState>) -> AppResult<Vec<String>> {
+    let downloads = state.downloads.clone();
+    tokio::task::spawn_blocking(move || downloads.missing())
+        .await
+        .map_err(AppError::io)?
+}
+
+#[tauri::command]
+pub async fn reveal_download(task_id: String, state: State<'_, AppState>) -> AppResult<()> {
+    let downloads = state.downloads.clone();
+    tokio::task::spawn_blocking(move || downloads.reveal(&task_id))
+        .await
+        .map_err(AppError::io)?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn a_new_download_does_not_reuse_the_path_of_a_missing_file() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let source = work.join("Video.mp4");
+        std::fs::write(&source, b"new download").unwrap();
+        let task: DownloadTask = serde_json::from_value(json!({
+            "id": "old", "video": MediaItem::default(), "mode": "video", "format": "mp4",
+            "quality": 720, "status": "completed", "destination": root, "progress": 100,
+            "downloadedBytes": 42, "createdAt": 0, "sessionGeneration": 0,
+            "outputPath": root.join("Video.mp4")
+        }))
+        .unwrap();
+
+        assert!(output_missing(&task));
+        let published = publish_file(&source, &root, "new-file-id", &[task]).unwrap();
+        assert_eq!(published, root.join("Video [new-file].mp4"));
+        assert_eq!(std::fs::read(&published).unwrap(), b"new download");
+        std::fs::remove_file(published).unwrap();
+        std::fs::remove_dir(work).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
     #[test]
     fn validates_stable_youtube_ids() {
         assert!(valid_video_id("BaW_jenozKc"));

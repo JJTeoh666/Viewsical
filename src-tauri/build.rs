@@ -6,6 +6,7 @@ fn main() {
         "save_settings",
         "clear_history",
         "reveal_download",
+        "missing_downloads",
         "open_sign_in",
         "complete_sign_in",
         "sign_out",

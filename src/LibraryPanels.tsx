@@ -1,23 +1,102 @@
 import { version } from '../package.json';
-import { AlertCircle, ArrowDownToLine, Check, CheckCircle2, Clock3, Folder, History, LoaderCircle, Pause, Play, Search, ShieldCheck, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { AlertCircle, ArrowDownToLine, Check, CheckCircle2, Clock3, Folder, History, LoaderCircle, Pause, Play, Search, ShieldCheck, Trash2, X } from 'lucide-react';
 import { api } from './api';
-import { bytes, progressPercent, relativeDate, time } from './format';
-import { EmptyState, IconButton, Logo, Thumbnail } from './ui';
+import { bytes, errorMessage, progressPercent, relativeDate, time } from './format';
+import { EmptyState, IconButton, Logo, Modal, Thumbnail } from './ui';
 import { MediaCachePanel } from './MediaCachePanel';
 import type { AppSettings, DownloadTask, HistoryItem, MediaItem, SessionSnapshot, ToolStatus } from './types';
 
 const active = new Set(['queued', 'resolving', 'downloading', 'merging', 'validating']);
 
-export function DownloadsPanel({ tasks, onPlay, onDownload, onSearch, onError }: { tasks: DownloadTask[]; onPlay: (task: DownloadTask) => void; onDownload: (item: MediaItem) => void; onSearch: () => void; onError: (error: unknown) => void }) {
-  if (!tasks.length) return <EmptyState icon={ArrowDownToLine} title="Take your videos with you" action={<button className="button secondary" onClick={onSearch}><Search size={18} />Find a video</button>}>Download a video or its audio to watch and listen offline. Your downloads will appear here.</EmptyState>;
-  return <div className="downloads-list">{tasks.map(task => <article className="download-card" key={task.id}>
+export function DownloadsPanel({ tasks, onPlay, onDownload, onDeleted, onSearch, onError }: { tasks: DownloadTask[]; onPlay: (task: DownloadTask) => void; onDownload: (item: MediaItem) => void; onDeleted: (id: string) => void; onSearch: () => void; onError: (error: unknown) => void }) {
+  const [missing, setMissing] = useState<Set<string> | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DownloadTask | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const hasCompleted = tasks.some(task => task.status === 'completed');
+
+  useEffect(() => {
+    if (!hasCompleted) return;
+    let disposed = false;
+    let scanning = false;
+    let reportedError = false;
+    async function scan() {
+      if (scanning) return;
+      scanning = true;
+      try {
+        const ids = await api.missingDownloads();
+        if (!disposed) setMissing(new Set(ids));
+        reportedError = false;
+      } catch (error) {
+        if (disposed) return;
+        setMissing(current => current ?? new Set());
+        if (!reportedError) onError(error);
+        reportedError = true;
+      } finally {
+        scanning = false;
+      }
+    }
+    void scan();
+    const interval = window.setInterval(scan, 5_000);
+    window.addEventListener('focus', scan);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', scan);
+    };
+  }, [hasCompleted, onError]);
+
+  async function reveal(task: DownloadTask) {
+    try {
+      await api.revealDownload(task.id);
+    } catch (error) {
+      if (typeof error === 'object' && error && 'code' in error && error.code === 'not_found') {
+        setMissing(current => new Set(current).add(task.id));
+      }
+      onError(error);
+    }
+  }
+
+  async function deleteDownload() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await api.downloadAction(deleteTarget.id, 'delete');
+      onDeleted(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch (error) {
+      setDeleteError(errorMessage(error));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  if (hasCompleted && missing === null) return <p className="muted" role="status">Checking downloaded files…</p>;
+  const visibleTasks = tasks.filter(task => !missing?.has(task.id));
+  if (!visibleTasks.length && !deleteTarget) return <EmptyState icon={ArrowDownToLine} title="Take your videos with you" action={<button className="button secondary" onClick={onSearch}><Search size={18} />Find a video</button>}>Download a video or its audio to watch and listen offline. Your downloads will appear here.</EmptyState>;
+  return <><div className="downloads-list">{visibleTasks.map(task => <article className="download-card" key={task.id}>
     <button className="download-thumbnail" onClick={() => task.status === 'completed' ? onPlay(task) : onDownload(task.video)} aria-label={`${task.status === 'completed' ? 'Play downloaded' : 'Download options for'} ${task.video.title}`}><Thumbnail item={task.video} /></button>
     <div className="download-copy"><div className="download-title-row"><h2>{task.video.title}</h2><span className={`download-status status-${task.status}`}>{task.status === 'completed' ? <CheckCircle2 size={14} /> : task.status === 'failed' ? <AlertCircle size={14} /> : task.status === 'paused' ? <Pause size={13} /> : active.has(task.status) ? <LoaderCircle size={14} className="spin" /> : null}{task.status === 'completed' ? 'Ready offline' : task.status[0].toUpperCase() + task.status.slice(1)}</span></div>
       <p className="video-channel">{task.video.channel}<span className="metadata-separator">·</span>{task.mode === 'audio' ? 'Audio' : `${task.quality}p limit`}<span className="metadata-separator">·</span>{task.format === 'original' ? 'Original audio' : task.format.toUpperCase()}</p>
       {!['completed', 'cancelled'].includes(task.status) && <div className={`download-progress ${task.status === 'failed' ? 'progress-failed' : ''}`} role="progressbar" aria-label={`Downloading ${task.video.title}`} aria-valuenow={progressPercent(task.progress)} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${progressPercent(task.progress)}%` }} /></div>}
       <div className="download-stats"><span>{task.status === 'completed' ? bytes(task.totalBytes ?? task.downloadedBytes) : `${bytes(task.downloadedBytes)}${task.totalBytes ? ` / ${bytes(task.totalBytes)}` : ''}`}</span>{task.speed && active.has(task.status) && <span>{task.speed}</span>}{task.eta && active.has(task.status) && <span>{task.eta} remaining</span>}{task.status === 'downloading' && <span>{Math.floor(progressPercent(task.progress))}%</span>}</div>{task.error && <p className="task-error">{task.error}</p>}
-    </div><div className="download-actions">{task.status === 'completed' ? <><IconButton label={`Play ${task.video.title} offline`} onClick={() => onPlay(task)}><Play size={20} /></IconButton><IconButton label="Show file in folder" onClick={() => void api.revealDownload(task.id).catch(onError)}><Folder size={20} /></IconButton></> : <>{active.has(task.status) ? <IconButton label="Pause download" onClick={() => void api.downloadAction(task.id, 'pause').catch(onError)}><Pause size={20} /></IconButton> : task.status === 'paused' || task.status === 'failed' ? <IconButton label={task.status === 'failed' ? 'Retry download' : 'Resume download'} onClick={() => void api.downloadAction(task.id, 'resume').catch(onError)}><Play size={20} /></IconButton> : null}{task.status !== 'cancelled' && <IconButton label="Cancel download" onClick={() => void api.downloadAction(task.id, 'cancel').catch(onError)}><X size={20} /></IconButton>}</>}</div>
-  </article>)}</div>;
+    </div><div className="download-actions">{task.status === 'completed' ? <>
+      <IconButton label={`Play ${task.video.title} offline`} onClick={() => onPlay(task)}><Play size={20} /></IconButton>
+      <IconButton label="Show file in folder" onClick={() => void reveal(task)}><Folder size={20} /></IconButton>
+      <IconButton label={`Delete ${task.video.title} download`} onClick={() => { setDeleteError(''); setDeleteTarget(task); }}><Trash2 size={20} /></IconButton>
+    </> : <>{active.has(task.status) ? <IconButton label="Pause download" onClick={() => void api.downloadAction(task.id, 'pause').catch(onError)}><Pause size={20} /></IconButton> : task.status === 'paused' || task.status === 'failed' ? <IconButton label={task.status === 'failed' ? 'Retry download' : 'Resume download'} onClick={() => void api.downloadAction(task.id, 'resume').catch(onError)}><Play size={20} /></IconButton> : null}{task.status !== 'cancelled' && <IconButton label="Cancel download" onClick={() => void api.downloadAction(task.id, 'cancel').catch(onError)}><X size={20} /></IconButton>}</>}</div>
+  </article>)}</div>
+    {deleteTarget && <Modal title="Delete download?" onClose={() => { if (!deleting) setDeleteTarget(null); }}>
+      <p className="modal-intro">Permanently delete the downloaded file for <strong>{deleteTarget.video.title}</strong>?</p>
+      {deleteError && <div className="inline-error" role="alert"><AlertCircle size={18} /><span>{deleteError}</span></div>}
+      <div className="modal-footer">
+        <button type="button" className="button secondary" disabled={deleting} onClick={() => setDeleteTarget(null)}>Cancel</button>
+        <button type="button" className="button primary" disabled={deleting} onClick={() => void deleteDownload()}>{deleting ? 'Deleting…' : 'Delete download'}</button>
+      </div>
+    </Modal>}
+  </>;
 }
 
 export function HistoryPanel({ entries, onPlay, onDownload }: { entries: HistoryItem[]; onPlay: (item: MediaItem) => void; onDownload: (item: MediaItem) => void }) {
