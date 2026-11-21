@@ -1,5 +1,10 @@
 # Changelog
 
+## Viewsical 0.1.16 — 21 November 2026
+
+- Read subscription status from YouTube's newer channel header so the Subscribe button works on more channels.
+- Keep the hover time and chapter in the bottom player's seek preview without loading video thumbnails.
+
 ## Viewsical 0.1.15 — 21 November 2026
 
 - Open channel profiles from the uploader and recommendation channel links. Show the uploader's avatar, subscriber count, and Subscribe button on the watch page.

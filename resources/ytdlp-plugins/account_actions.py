@@ -170,17 +170,38 @@ def subscription_state(header, channel_id):
             unsubscribe_state = traverse_obj(button, ('unsubscribeButtonContent', 'subscribeState', 'subscribed'))
             if isinstance(subscribe_state, bool) and subscribe_state is unsubscribe_state:
                 return subscribe_state
-    # Some variants put the currently visible action in a plain button.
+    # The modern channel header may use a plain button or a menu trigger without
+    # repeating the channel ID. Only inspect visible, top-level header actions.
+    buttons = traverse_obj(header, (
+        'pageHeaderRenderer', 'content', 'pageHeaderViewModel', 'actions',
+        'flexibleActionsViewModel', 'actionsRows', ..., 'actions', ..., 'buttonViewModel', {dict},
+    ))
+    def state_from_button(button, scoped):
+        if not isinstance(button, dict):
+            return None
+        title = button.get('title')
+        action = button.get('onTap')
+        if (title not in ('Subscribe', 'Subscribed') or not isinstance(action, dict)
+                or not action or button.get('isSignedOut') is True):
+            return None
+        if any(True for key in ('signInEndpoint', 'signInCommand', 'showSignInDialogCommand')
+               for _ in descendants(action, key)):
+            return None
+        endpoints = [endpoint for key in ('subscribeEndpoint', 'unsubscribeEndpoint')
+                     for endpoint in descendants(action, key) if isinstance(endpoint, dict)]
+        if endpoints and not any(endpoint.get('channelIds') == [channel_id] for endpoint in endpoints):
+            return None
+        if scoped or endpoints:
+            return title == 'Subscribed'
+        return None
+
+    states = {state for button in buttons if (state := state_from_button(button, True)) is not None}
+    if states:
+        return states.pop() if len(states) == 1 else None
+    # Other header layouts need a matching channel ID on the action itself.
     for button in descendants(header, 'buttonViewModel'):
-        if not isinstance(button, dict) or button.get('title') not in ('Subscribe', 'Subscribed'):
-            continue
-        action_found = any(
-            isinstance(action, dict) and action.get('channelIds') == [channel_id]
-            for key in ('subscribeEndpoint', 'unsubscribeEndpoint')
-            for action in descendants(button.get('onTap'), key)
-        )
-        if action_found:
-            return button['title'] == 'Subscribed'
+        if (state := state_from_button(button, False)) is not None:
+            return state
     return None
 
 
@@ -211,6 +232,8 @@ def run_subscription(channel_id, cookie_path, desired):
             if config.get('LOGGED_IN') is not True:
                 return config, None
             data = extractor.extract_yt_initial_data(channel_id, webpage)
+            if traverse_obj(data, ('responseContext', 'mainAppWebResponseContext', 'loggedOut')) is True:
+                return {}, None
             returned_id = traverse_obj(data, ('metadata', 'channelMetadataRenderer', 'externalId'))
             return config, data if returned_id == channel_id else None
 

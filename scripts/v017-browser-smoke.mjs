@@ -154,10 +154,13 @@ async function testWatchActions(page, check) {
   const suggestions = page.getByRole('region', { name: 'More to watch', exact: true });
   const more = suggestions.getByRole('button', { name: 'Load more', exact: true });
   await row.getByText('24.8K subscribers').waitFor();
+  await subscribe.waitFor();
+  await page.waitForFunction(() => !document.querySelector('.watch-channel .channel-subscribe')?.disabled);
   await more.waitFor();
   check('The watch action row shows channel details and an icon-only download',
     await row.locator('.channel-avatar img').evaluate(img => img.complete && img.naturalWidth > 0)
     && !(await download.textContent()).trim() && await row.getByRole('button', { name: 'Queue', exact: true }).count() === 0);
+  await row.locator('.watch-channel').screenshot({ path: path.join(output, 'viewsical-subscription-status.png') });
   await subscribe.click();
   await row.getByRole('button', { name: 'Subscribed', exact: true }).waitFor();
   check('The watch Subscribe button acts on the video uploader', await page.evaluate(() =>
@@ -866,6 +869,27 @@ try {
     && await page.locator('.bottom-player-progress .seek-preview-image').count()===0);
   await page.waitForTimeout(120);
   check('Audio-only seeking does not request storyboard images',images.length===0,images);
+  const dockOptions = page.locator('.bottom-player-options');
+  async function setDockMode(mode) {
+    await dockOptions.getByRole('button', { name: 'Playback settings' }).click();
+    await dockOptions.getByRole('menuitem', { name: /Playback mode/ }).click();
+    await dockOptions.getByRole('menuitemradio', { name: mode, exact: true }).click();
+  }
+  await setDockMode('Video');
+  await page.locator('.bottom-player:not(.audio-player)').waitFor();
+  const dockToast = page.getByRole('button', { name: 'Dismiss message' });
+  if (await dockToast.isVisible()) await dockToast.click();
+  const dockSlider = page.locator('.bottom-player-progress .seek-slider');
+  await scrubAt(page, dockSlider, 0.25);
+  await page.locator('.bottom-player-progress .seek-preview-time').waitFor();
+  await page.waitForTimeout(120);
+  check('Docked video keeps the hover time and chapter without requesting a storyboard',
+    await page.locator('.bottom-player-progress .seek-preview-chapter').textContent() === 'Overture'
+    && await page.locator('.bottom-player-progress .seek-preview-image').count() === 0 && images.length === 0);
+  const screenshotTop = Math.floor(dock.y - 70);
+  await page.screenshot({ path: path.join(output, 'viewsical-bottom-player-no-thumbnail.png'),
+    clip: { x: 0, y: screenshotTop, width: page.viewportSize().width, height: page.viewportSize().height - screenshotTop } });
+  await setDockMode('Audio only');
   await page.getByRole('button',{name:'Restore floating mini player',exact:true}).click();
   await page.evaluate(()=>{document.activeElement?.blur();scrollTo(0,0);});await page.mouse.move(950,500);await page.mouse.wheel(0,600);await page.waitForTimeout(120);check('Root wheel scrolling works with no visible page scrollbar',await page.evaluate(()=>scrollY)>0);const yBeforePageUp=await page.evaluate(()=>scrollY);await page.keyboard.press('PageUp');await page.waitForFunction(previous=>scrollY<previous,yBeforePageUp,{timeout:5000});check('Root PageUp retains document scrolling',await page.evaluate(()=>scrollY)<yBeforePageUp);await page.keyboard.press('End');await page.waitForFunction(()=>scrollY+innerHeight>=document.documentElement.scrollHeight-2,{},{timeout:5000});check('Root End key reaches loaded page bottom',await page.evaluate(()=>scrollY+innerHeight>=document.documentElement.scrollHeight-2));await page.keyboard.press('Home');await page.waitForFunction(()=>scrollY<2,undefined,{timeout:5000});check('Root Home key returns to top',await page.evaluate(()=>scrollY)<2);
   await page.evaluate(()=>scrollTo(0,600));await page.getByRole('button',{name:'Back to top',exact:true}).waitFor();

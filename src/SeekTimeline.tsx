@@ -54,9 +54,9 @@ function PreviewImage({ url, board, tile }: { url: string; board: Storyboard; ti
   </div>;
 }
 
-function TimelinePreview({ player, position, audio }: { player: PlayerState; position: number; audio: boolean }) {
+function TimelinePreview({ player, position, showThumbnail }: { player: PlayerState; position: number; showThumbnail: boolean }) {
   const { duration, video } = player;
-  const storyboard = audio ? undefined : player.storyboard;
+  const storyboard = showThumbnail ? player.storyboard : undefined;
   const fraction = position / duration;
   const chapter = chapterAt(video?.chapters, position, duration);
   const peak = video?.heatmap?.reduce<ReplayHeatmapInterval | undefined>(
@@ -78,8 +78,8 @@ function TimelinePreview({ player, position, audio }: { player: PlayerState; pos
   </div>;
 }
 
-export function SeekTimeline({ player, audio, enabled, visible, dragging, trackRef, children }: {
-  player: PlayerState; audio: boolean; enabled: boolean; visible: boolean; dragging: { current: boolean };
+export function SeekTimeline({ player, showThumbnail, enabled, visible, dragging, trackRef, children }: {
+  player: PlayerState; showThumbnail: boolean; enabled: boolean; visible: boolean; dragging: { current: boolean };
   trackRef: Ref<HTMLDivElement>; children: ReactNode;
 }) {
   const [hover, setHover] = useState<{ loadId: number; position: number } | null>(null);
@@ -123,6 +123,6 @@ export function SeekTimeline({ player, audio, enabled, visible, dragging, trackR
       ? <ChapterSegments chapters={chapters} duration={player.duration} position={position} />
       : <div className="seek-rail" aria-hidden="true"><span className="seek-continuous-rail" /></div>}
     {children}
-    {position !== null && <TimelinePreview player={player} position={position} audio={audio} />}
+    {position !== null && <TimelinePreview player={player} position={position} showThumbnail={showThumbnail} />}
   </div>;
 }

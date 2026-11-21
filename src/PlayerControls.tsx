@@ -172,7 +172,7 @@ export const PlayerControls = memo(function PlayerControls({ player, audio, comp
     } else progress.commit(player.position);
   }
   const chapter = chapterAt(player.video?.chapters, progress.position, player.duration);
-  const seek = <SeekTimeline player={player} audio={audio} enabled={seekable && player.status !== 'failed'} visible={visible} dragging={progress.dragging} trackRef={progress.track}>
+  const seek = <SeekTimeline player={player} showThumbnail={!audio && variant !== 'dock'} enabled={seekable && player.status !== 'failed'} visible={visible} dragging={progress.dragging} trackRef={progress.track}>
     {intervals && heatmapId && <ReplayHeatmap intervals={intervals} duration={player.duration} descriptionId={heatmapId} />}
     <label className="sr-only" htmlFor={seekId}>Playback position</label><input ref={progress.slider} data-player-range id={seekId} className="seek-slider" type="range" min="0" max={Math.max(1, player.duration)} step="0.1" defaultValue={player.position}
     onPointerDown={event => {

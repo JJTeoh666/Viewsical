@@ -1,6 +1,6 @@
 [package]
 name = "tubedesk"
-version = "0.1.15"
+version = "0.1.16"
 description = "A desktop video library and YouTube player"
 authors = ["Viewsical"]
 edition = "2021"
