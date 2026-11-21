@@ -1,6 +1,6 @@
 import { memo, useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { ArrowLeft, Captions, Check, ChevronRight, Gauge, Headphones, Maximize, Music2, Pause, Play, RectangleHorizontal, Settings, SkipBack, SkipForward, SlidersHorizontal, Video, Volume2, VolumeX } from 'lucide-react';
+import { ArrowLeft, Captions, Check, ChevronRight, Gauge, Headphones, Maximize, Minimize, Music2, Pause, PictureInPicture2, Play, RectangleHorizontal, Settings, SkipBack, SkipForward, SlidersHorizontal, Video, Volume2, VolumeX } from 'lucide-react';
 import { time } from './format';
 import { chapterAt, SeekTimeline } from './SeekTimeline';
 import { SubtitleOptions } from './SubtitleOptions';
@@ -59,6 +59,7 @@ interface ControlsProps {
   fullscreen: boolean; theater: boolean; hasPrevious: boolean; hasNext: boolean;
   onAction: (action: PlayerAction, value?: number) => void; onMode: (mode: PlaybackMode) => void;
   onPrevious: () => void; onNext: () => void; onFullscreen: () => void; onTheater: () => void; onRetry?: () => void;
+  onMinimize?: () => void;
   onMenuChange?: (open: boolean) => void; onDragging?: (active: boolean) => void;
 }
 
@@ -152,7 +153,7 @@ export function VolumeControl({ player, onAction, compact = false }: { player: P
   return <div className="volume-control"><IconButton label={player.muted ? 'Unmute (M)' : 'Mute (M)'} onClick={() => onAction('mute', player.muted ? 0 : 1)}>{player.muted || !player.volume ? <VolumeX size={21} /> : <Volume2 size={21} />}</IconButton>{!compact && <input data-player-range type="range" min="0" max="100" value={player.volume} onChange={event => onAction('volume', Number(event.target.value))} aria-label="Volume" aria-valuetext={`${Math.round(player.volume)}%${player.muted ? ', muted' : ''}`} />}</div>;
 }
 
-export const PlayerControls = memo(function PlayerControls({ player, audio, compact = false, visible = true, variant = 'surface', fullscreen, theater, hasPrevious, hasNext, onAction, onMode, onPrevious, onNext, onFullscreen, onTheater, onRetry, onMenuChange, onDragging }: ControlsProps) {
+export const PlayerControls = memo(function PlayerControls({ player, audio, compact = false, visible = true, variant = 'surface', fullscreen, theater, hasPrevious, hasNext, onAction, onMode, onPrevious, onNext, onFullscreen, onTheater, onMinimize, onRetry, onMenuChange, onDragging }: ControlsProps) {
   const seekId = useId(), progress = usePlaybackPosition(player, visible);
   const pointerLoad = useRef(player.loadId), cancelledSeek = useRef(false);
   const busy = ['resolving', 'preparing'].includes(player.status), playing = ['playing', 'buffering'].includes(player.status);
@@ -192,7 +193,14 @@ export const PlayerControls = memo(function PlayerControls({ player, audio, comp
   if (variant === 'dock') return <div className="bottom-player-transport shared-player-controls" role="group" aria-label="Playback controls"><div className="bottom-transport-buttons">{transport}</div><div className="bottom-player-progress"><span>{time(progress.position)}</span>{seek}<span>{time(player.duration)}</span></div></div>;
   return <div className={`player-controls html-player-controls shared-player-controls ${compact ? 'compact-controls' : ''} ${variant === 'surface' ? 'surface-player-controls' : ''}`} data-player-interactive>
     {seek}<div className="control-row"><div className="control-group">{transport}<VolumeControl player={player} onAction={onAction} compact={compact} /><span className="player-time">{time(progress.position)}<span> / {time(player.duration)}</span></span></div>
-      <div className="control-group right-controls"><PlayerSettings player={player} audio={audio} visible={visible} onAction={onAction} onMode={onMode} onMenuChange={onMenuChange} />{!compact && <><IconButton label={theater ? 'Exit theater mode' : 'Theater mode'} onClick={onTheater}><RectangleHorizontal size={21} /></IconButton><IconButton label={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'} onClick={onFullscreen}><Maximize size={21} /></IconButton></>}</div>
+      <div className="control-group right-controls">
+        <PlayerSettings player={player} audio={audio} visible={visible} onAction={onAction} onMode={onMode} onMenuChange={onMenuChange} />
+        {!compact && <>
+          {onMinimize && <IconButton label="Minimize player" onClick={onMinimize}><PictureInPicture2 size={21} /></IconButton>}
+          <IconButton label={theater ? 'Exit theater mode' : 'Theater mode'} onClick={onTheater}><RectangleHorizontal size={21} /></IconButton>
+          <IconButton label={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'} onClick={onFullscreen}>{fullscreen ? <Minimize size={21} /> : <Maximize size={21} />}</IconButton>
+        </>}
+      </div>
     </div>
   </div>;
 });

@@ -40,6 +40,8 @@ struct Record {
     quality: u32,
     #[serde(default)]
     qualities: Vec<u32>,
+    #[serde(default)]
+    includes_audio: bool,
     file: String,
     bytes: u64,
     duration: f64,
@@ -48,10 +50,87 @@ struct Record {
     #[serde(default)]
     retired: bool,
 }
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheContent {
+    #[default]
+    Both,
+    Audio,
+    Video,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CacheOutput {
+    Audio,
+    Picture,
+    Video,
+}
+
+impl CacheOutput {
+    fn mode(self) -> &'static str {
+        match self {
+            Self::Audio => "audio",
+            Self::Picture | Self::Video => "video",
+        }
+    }
+
+    fn tracks(self) -> &'static [&'static str] {
+        match self {
+            Self::Audio => &["audio"],
+            Self::Picture => &["video"],
+            Self::Video => &["video", "audio"],
+        }
+    }
+
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Audio => "a.mka",
+            Self::Picture | Self::Video => "v.mkv",
+        }
+    }
+
+    fn quality(self, quality: u32) -> u32 {
+        if self == Self::Audio {
+            0
+        } else {
+            quality
+        }
+    }
+}
+
+fn cache_outputs(
+    content: CacheContent,
+    playing_video: bool,
+    has: impl Fn(CacheOutput) -> bool,
+) -> Vec<CacheOutput> {
+    use CacheOutput::{Audio, Picture, Video};
+    match content {
+        CacheContent::Video => {
+            if playing_video && !has(Video) && !(has(Picture) && has(Audio)) {
+                vec![Video]
+            } else {
+                vec![]
+            }
+        }
+        CacheContent::Both if playing_video => {
+            if has(Video) || (has(Picture) && has(Audio)) {
+                vec![]
+            } else {
+                vec![Picture, Audio]
+            }
+        }
+        CacheContent::Audio | CacheContent::Both => {
+            [Audio].into_iter().filter(|output| !has(*output)).collect()
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Index {
     enabled: bool,
+    #[serde(default)]
+    content: CacheContent,
     max_bytes: u64,
     entries: Vec<Record>,
 }
@@ -59,6 +138,7 @@ impl Default for Index {
     fn default() -> Self {
         Self {
             enabled: true,
+            content: CacheContent::Both,
             max_bytes: DEFAULT_LIMIT,
             entries: vec![],
         }
@@ -92,6 +172,7 @@ pub struct CacheEntry {
 #[serde(rename_all = "camelCase")]
 pub struct CacheSummary {
     enabled: bool,
+    content: CacheContent,
     max_bytes: u64,
     total_bytes: u64,
     audio_bytes: u64,
@@ -246,6 +327,7 @@ impl MediaCache {
             .sum::<u64>();
         CacheSummary {
             enabled: inner.index.enabled,
+            content: inner.index.content,
             max_bytes: inner.index.max_bytes,
             total_bytes: entries
                 .iter()
@@ -285,6 +367,7 @@ impl MediaCache {
         app: &AppHandle,
         enabled: bool,
         max_bytes: u64,
+        content: Option<CacheContent>,
     ) -> AppResult<CacheSummary> {
         if !(MIN_LIMIT..=MAX_LIMIT).contains(&max_bytes) {
             return Err(AppError::new(
@@ -296,6 +379,9 @@ impl MediaCache {
             let mut inner = self.inner.lock().map_err(AppError::io)?;
             inner.index.enabled = enabled;
             inner.index.max_bytes = max_bytes;
+            if let Some(content) = content {
+                inner.index.content = content;
+            }
             // Cancel unpublished work when settings change. Existing complete
             // components remain usable even if automatic caching is disabled.
             for (_, token) in inner.jobs.values() {
@@ -379,25 +465,36 @@ impl MediaCache {
             .iter()
             .filter(allowed)
             .filter(|r| r.mode == "audio")
-            .max_by_key(|r| (r.account == account, r.last_accessed))?
-            .clone();
-        let video = if mode == "video" {
-            Some(
-                inner
-                    .index
-                    .entries
-                    .iter()
-                    .filter(allowed)
-                    .filter(|r| r.mode == "video" && r.quality <= quality)
-                    .max_by_key(|r| (r.quality, r.account == account, r.last_accessed))?
-                    .clone(),
-            )
-        } else {
-            None
+            .max_by_key(|r| (r.account == account, r.last_accessed));
+        let best_video = |cap: u32, needs_audio: bool| {
+            inner
+                .index
+                .entries
+                .iter()
+                .filter(allowed)
+                .filter(|r| {
+                    r.mode == "video" && r.quality <= cap && (r.includes_audio || !needs_audio)
+                })
+                .max_by_key(|r| {
+                    (
+                        r.quality,
+                        r.account == account,
+                        r.includes_audio,
+                        r.last_accessed,
+                    )
+                })
         };
-        let mut ids = vec![audio.id.clone()];
-        if let Some(v) = &video {
-            ids.push(v.id.clone());
+        let (selected, external_audio) = if mode == "video" {
+            let video = best_video(quality, audio.is_none())?;
+            (video, audio.filter(|_| !video.includes_audio))
+        } else {
+            (audio.or_else(|| best_video(u32::MAX, true))?, None)
+        };
+        let selected = selected.clone();
+        let external_audio = external_audio.cloned();
+        let mut ids = vec![selected.id.clone()];
+        if let Some(audio) = &external_audio {
+            ids.push(audio.id.clone());
         }
         for id in &ids {
             *inner.pins.entry(id.clone()).or_default() += 1;
@@ -408,34 +505,33 @@ impl MediaCache {
             }
         }
         let _ = self.save_locked(&inner);
-        let selected = video.as_ref().unwrap_or(&audio);
+        let selected_quality = if mode == "video" { selected.quality } else { 0 };
+        let mut qualities = if mode == "video" {
+            selected.qualities.clone()
+        } else {
+            vec![]
+        };
+        if mode == "video" && !qualities.contains(&selected_quality) {
+            qualities.push(selected_quality);
+        }
         let plan = PlaybackPlan {
             video_url: self.root.join(&selected.file).to_string_lossy().into(),
-            audio_url: video
+            audio_url: external_audio
                 .as_ref()
-                .map(|_| self.root.join(&audio.file).to_string_lossy().into()),
+                .map(|audio| self.root.join(&audio.file).to_string_lossy().into()),
             headers: vec![],
             audio_headers: vec![],
-            selected_quality: selected.quality,
-            qualities: video
-                .as_ref()
-                .map(|v| {
-                    let mut qualities = v.qualities.clone();
-                    if !qualities.contains(&v.quality) {
-                        qualities.push(v.quality);
-                    }
-                    qualities
-                })
-                .unwrap_or_default(),
+            selected_quality,
+            qualities,
             session_generation: generation,
-            video: selected.video.clone(),
+            video: selected.video,
             storyboard: None,
             mode: mode.into(),
             protocol: "cache".into(),
             format_id: "internal-cache".into(),
             expires_at: None,
         };
-        tracing::info!(video_id=%item.id, mode, quality=selected.quality, "Internal media cache hit");
+        tracing::info!(video_id=%item.id, mode, quality=selected_quality, "Internal media cache hit");
         drop(inner);
         self.notify();
         Some(CachedPlayback {
@@ -465,22 +561,24 @@ impl MediaCache {
         );
         let nonce = uuid::Uuid::new_v4();
         let cancel = CancellationToken::new();
-        {
+        let outputs = {
             let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
             if !inner.index.enabled {
                 return;
             }
-            let has = |mode: &str| {
+            let has = |output: CacheOutput| {
                 inner.index.entries.iter().any(|r| {
                     !r.retired
                         && r.account == account
                         && r.video.id == plan.video.id
-                        && r.mode == mode
-                        && (mode == "audio" || r.quality == plan.selected_quality)
+                        && r.mode == output.mode()
+                        && r.quality == output.quality(plan.selected_quality)
+                        && r.includes_audio == (output == CacheOutput::Video)
                         && valid_record(&self.root, r)
                 })
             };
-            if has("audio") && (plan.mode == "audio" || has("video")) {
+            let outputs = cache_outputs(inner.index.content, plan.mode == "video", has);
+            if outputs.is_empty() {
                 return;
             }
             if let Some((_, old)) = inner.jobs.insert(key.clone(), (nonce, cancel.clone())) {
@@ -493,12 +591,13 @@ impl MediaCache {
                     token.cancel();
                 }
             }
-        }
+            outputs
+        };
         self.emit(app);
         let cache = self.clone();
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            let result = cache.fill(&app, &plan, account, &cancel).await;
+            let result = cache.fill(&app, &plan, &outputs, account, &cancel).await;
             if let Err(error) = result {
                 tracing::info!(video_id=%plan.video.id, category=%error.code, "Background media cache did not complete");
             }
@@ -515,6 +614,7 @@ impl MediaCache {
         &self,
         app: &AppHandle,
         plan: &PlaybackPlan,
+        outputs: &[CacheOutput],
         account: bool,
         cancel: &CancellationToken,
     ) -> AppResult<()> {
@@ -523,55 +623,24 @@ impl MediaCache {
         let limit = self.inner.lock().map_err(AppError::io)?.index.max_bytes;
         let tools = app.state::<AppState>().tools.clone();
         let id = uuid::Uuid::new_v4().to_string();
-        let audio_name = format!("{id}-a.partial.mka");
-        let video_name = format!("{id}-v.partial.mkv");
-        let audio = self.root.join(&audio_name);
-        let video = self.root.join(&video_name);
+        let files: Vec<_> = outputs
+            .iter()
+            .map(|&output| {
+                let (tag, extension) = output
+                    .suffix()
+                    .split_once('.')
+                    .expect("cache suffix has an extension");
+                (
+                    output,
+                    self.root.join(format!("{id}-{tag}.partial.{extension}")),
+                )
+            })
+            .collect();
         let cleanup = PartialFiles {
-            files: vec![audio.clone(), video.clone()],
+            files: files.iter().map(|(_, path)| path.clone()).collect(),
         };
         let mut command = Command::new(tools.ffmpeg()?);
-        command.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y"]);
-        input(&mut command, &plan.video_url, &plan.headers);
-        if let Some(source) = &plan.audio_url {
-            input(&mut command, source, &plan.audio_headers);
-        }
-        if plan.mode == "video" {
-            command
-                .args([
-                    "-map",
-                    "0:v:0",
-                    "-an",
-                    "-c",
-                    "copy",
-                    "-map_metadata",
-                    "-1",
-                    "-fs",
-                    &limit.to_string(),
-                    "-f",
-                    "matroska",
-                ])
-                .arg(&video);
-        }
-        command
-            .args([
-                "-map",
-                if plan.audio_url.is_some() {
-                    "1:a:0"
-                } else {
-                    "0:a:0"
-                },
-                "-vn",
-                "-c",
-                "copy",
-                "-map_metadata",
-                "-1",
-                "-fs",
-                &limit.to_string(),
-                "-f",
-                "matroska",
-            ])
-            .arg(&audio);
+        cache_command(&mut command, plan, &files, limit);
         command
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -588,7 +657,7 @@ impl MediaCache {
                 _ = cancel.cancelled() => { let _ = child.kill().await; let _ = child.wait().await; return Err(cancelled()); }
                 status = child.wait() => break status.map_err(AppError::io)?,
                 _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                    let partial_size: u64 = [&audio, &video].iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+                    let partial_size: u64 = files.iter().filter_map(|(_, path)| std::fs::metadata(path).ok()).map(|m| m.len()).sum();
                     let over_budget = {
                         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
                         let max = inner.index.max_bytes;
@@ -612,9 +681,9 @@ impl MediaCache {
                 "The media source could not be cached.",
             ));
         }
-        if [&audio, &video]
+        if files
             .iter()
-            .filter_map(|p| std::fs::metadata(p).ok())
+            .filter_map(|(_, path)| std::fs::metadata(path).ok())
             .any(|m| m.len() >= limit.saturating_sub(64 * 1024))
         {
             return Err(AppError::new(
@@ -623,27 +692,28 @@ impl MediaCache {
             ));
         }
         let mut records = vec![];
-        for (path, mode, quality, suffix) in [
-            (&audio, "audio", 0, "a.mka"),
-            (&video, "video", plan.selected_quality, "v.mkv"),
-        ] {
-            if mode == "video" && plan.mode == "audio" {
-                continue;
-            }
-            let duration =
-                probe(&tools.ffprobe()?, path, mode, plan.video.duration, cancel).await?;
+        for (output, path) in files {
+            let duration = probe(
+                &tools.ffprobe()?,
+                &path,
+                output,
+                plan.video.duration,
+                cancel,
+            )
+            .await?;
             self.check_current(app, plan, cancel)?;
-            let bytes = std::fs::metadata(path).map_err(AppError::io)?.len();
+            let bytes = std::fs::metadata(&path).map_err(AppError::io)?.len();
             let record_id = uuid::Uuid::new_v4().to_string();
             records.push((
-                path.clone(),
+                path,
                 Record {
-                    file: format!("{record_id}-{suffix}"),
+                    file: format!("{record_id}-{}", output.suffix()),
                     id: record_id,
                     video: plan.video.clone(),
-                    mode: mode.into(),
-                    quality,
+                    mode: output.mode().into(),
+                    quality: output.quality(plan.selected_quality),
                     qualities: plan.qualities.clone(),
+                    includes_audio: output == CacheOutput::Video,
                     bytes,
                     duration,
                     last_accessed: now(),
@@ -671,6 +741,7 @@ impl MediaCache {
                         && r.video.id == record.video.id
                         && r.mode == record.mode
                         && r.quality == record.quality
+                        && r.includes_audio == record.includes_audio
                         && valid_record(&self.root, r)
                 }) {
                     continue;
@@ -718,7 +789,12 @@ impl MediaCache {
         self.emit(app);
     }
     pub(crate) fn has_jobs(&self) -> bool {
-        !self.inner.lock().unwrap_or_else(|p| p.into_inner()).jobs.is_empty()
+        !self
+            .inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .jobs
+            .is_empty()
     }
     pub async fn shutdown(&self) {
         self.begin_shutdown();
@@ -736,6 +812,52 @@ impl MediaCache {
         }
     }
 }
+fn cache_command(
+    command: &mut Command,
+    plan: &PlaybackPlan,
+    files: &[(CacheOutput, PathBuf)],
+    limit: u64,
+) {
+    command.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y"]);
+    let need_video = files
+        .iter()
+        .any(|(output, _)| *output != CacheOutput::Audio);
+    let need_audio = files
+        .iter()
+        .any(|(output, _)| *output != CacheOutput::Picture);
+    if need_video || plan.audio_url.is_none() {
+        input(command, &plan.video_url, &plan.headers);
+    }
+    let mut audio_stream = "0:a:0";
+    if let Some(source) = plan.audio_url.as_ref().filter(|_| need_audio) {
+        input(command, source, &plan.audio_headers);
+        if need_video {
+            audio_stream = "1:a:0";
+        }
+    }
+    let limit = limit.to_string();
+    for (output, path) in files {
+        if *output != CacheOutput::Audio {
+            command.args(["-map", "0:v:0"]);
+        }
+        if *output != CacheOutput::Picture {
+            command.args(["-map", audio_stream]);
+        }
+        command
+            .args([
+                "-c",
+                "copy",
+                "-map_metadata",
+                "-1",
+                "-fs",
+                &limit,
+                "-f",
+                "matroska",
+            ])
+            .arg(path);
+    }
+}
+
 fn input(command: &mut Command, url: &str, headers: &[(String, String)]) {
     command.args(["-rw_timeout", "15000000"]);
     if !headers.is_empty() {
@@ -751,7 +873,7 @@ fn input(command: &mut Command, url: &str, headers: &[(String, String)]) {
 async fn probe(
     tool: &Path,
     path: &Path,
-    mode: &str,
+    output_kind: CacheOutput,
     expected: Option<f64>,
     cancel: &CancellationToken,
 ) -> AppResult<f64> {
@@ -781,19 +903,21 @@ async fn probe(
     }
     let value: Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| AppError::new("cache_validation", "The cached media could not be read."))?;
-    validate_probe(&value, mode, expected)
+    validate_probe(&value, output_kind, expected)
 }
-fn validate_probe(value: &Value, mode: &str, expected: Option<f64>) -> AppResult<f64> {
+fn validate_probe(value: &Value, output: CacheOutput, expected: Option<f64>) -> AppResult<f64> {
     let error = || {
         AppError::new(
             "cache_validation",
             "The cached media is incomplete or has a missing track.",
         )
     };
-    if !value["streams"]
-        .as_array()
-        .is_some_and(|s| s.iter().any(|s| s["codec_type"] == mode))
-    {
+    if !value["streams"].as_array().is_some_and(|streams| {
+        output
+            .tracks()
+            .iter()
+            .all(|kind| streams.iter().any(|s| s["codec_type"] == *kind))
+    }) {
         return Err(error());
     }
     let duration = value["format"]["duration"]
@@ -861,9 +985,10 @@ pub async fn cache_configure(
     app: AppHandle,
     enabled: bool,
     max_bytes: u64,
+    content: Option<CacheContent>,
     state: State<'_, AppState>,
 ) -> AppResult<CacheSummary> {
-    state.cache.configure(&app, enabled, max_bytes)
+    state.cache.configure(&app, enabled, max_bytes, content)
 }
 #[tauri::command]
 pub async fn cache_clear(
@@ -878,6 +1003,44 @@ pub async fn cache_clear(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_content_policy_selects_requested_outputs_and_reuses_complete_media() {
+        use CacheOutput::{Audio, Picture, Video};
+        assert_eq!(
+            cache_outputs(CacheContent::Both, true, |_| false),
+            [Picture, Audio]
+        );
+        assert_eq!(
+            cache_outputs(CacheContent::Both, true, |output| output == Audio),
+            [Picture, Audio]
+        );
+        assert_eq!(cache_outputs(CacheContent::Both, false, |_| false), [Audio]);
+        assert_eq!(cache_outputs(CacheContent::Audio, true, |_| false), [Audio]);
+        assert_eq!(cache_outputs(CacheContent::Video, true, |_| false), [Video]);
+        assert!(cache_outputs(CacheContent::Video, false, |_| false).is_empty());
+        assert!(cache_outputs(CacheContent::Video, true, |output| output != Video).is_empty());
+        assert!(cache_outputs(CacheContent::Both, true, |output| output == Video).is_empty());
+    }
+
+    #[test]
+    fn cache_content_defaults_to_both_for_existing_indexes_and_round_trips() {
+        let mut index: Index = serde_json::from_value(serde_json::json!({
+            "enabled": true, "maxBytes": DEFAULT_LIMIT, "entries": []
+        }))
+        .unwrap();
+        assert!(matches!(index.content, CacheContent::Both));
+        for (content, name) in [
+            (CacheContent::Audio, "audio"),
+            (CacheContent::Video, "video"),
+        ] {
+            index.content = content;
+            let encoded = serde_json::to_value(&index).unwrap();
+            assert_eq!(encoded["content"], name);
+            index = serde_json::from_value(encoded).unwrap();
+            assert_eq!(serde_json::to_value(index.content).unwrap(), name);
+        }
+    }
 
     #[test]
     fn automatic_cache_requires_a_known_duration_of_at_most_five_minutes() {
@@ -902,10 +1065,19 @@ mod tests {
     #[test]
     fn truncated_or_silent_components_never_become_offline_media() {
         let v = serde_json::json!({"streams":[{"codec_type":"video"}],"format":{"duration":"20"}});
-        assert!(validate_probe(&v, "audio", Some(20.)).is_err());
-        assert!(validate_probe(&v, "video", Some(100.)).is_err());
-        assert!(validate_probe(&v, "video", None).is_err());
-        assert_eq!(validate_probe(&v, "video", Some(20.)).unwrap(), 20.);
+        assert!(validate_probe(&v, CacheOutput::Audio, Some(20.)).is_err());
+        assert!(validate_probe(&v, CacheOutput::Video, Some(20.)).is_err());
+        assert!(validate_probe(&v, CacheOutput::Picture, Some(100.)).is_err());
+        assert!(validate_probe(&v, CacheOutput::Picture, None).is_err());
+        assert_eq!(
+            validate_probe(&v, CacheOutput::Picture, Some(20.)).unwrap(),
+            20.
+        );
+        let complete = serde_json::json!({"streams":[{"codec_type":"video"},{"codec_type":"audio"}],"format":{"duration":"20"}});
+        assert_eq!(
+            validate_probe(&complete, CacheOutput::Video, Some(20.)).unwrap(),
+            20.
+        );
     }
     #[test]
     fn cache_names_cannot_escape_flat_owned_directory() {
@@ -940,6 +1112,7 @@ mod tests {
                 mode: "audio".into(),
                 quality: 0,
                 qualities: vec![],
+                includes_audio: false,
                 file,
                 bytes: 17,
                 duration: 19.,

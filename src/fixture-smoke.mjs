@@ -102,7 +102,7 @@ try {
   await page.getByRole('menuitemradio', { name: '1.5×', exact: true }).click();
   check('Settings popover speed submenu works', (await calls('player_action')).at(-1).args.value === 1.5);
   await page.getByRole('button', { name: 'Switch to video', exact: true }).click();
-  await page.locator('.watch-topline .back-button').focus();
+  await page.locator('.sidebar-bottom button').focus();
   await page.keyboard.press('Tab');
   await page.locator('.accessible-controls:focus-within').waitFor();
   await page.getByRole('group', { name: 'Accessible player controls', exact: true }).waitFor();

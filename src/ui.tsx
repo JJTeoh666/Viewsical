@@ -44,14 +44,17 @@ export function VideoCard({ item, onActivate, onDownload, onQueue, onOpenChannel
   item: MediaItem; onActivate: (item: MediaItem) => void; onDownload: (item: MediaItem) => void; onQueue: (item: MediaItem) => void;
   onOpenChannel?: (item: MediaItem) => void; onOpenPlaylist?: (item: MediaItem) => void; starting?: boolean; row?: boolean;
 }) {
+  const playlistLabel = 'View full playlist';
+  // YouTube sometimes supplies its playlist link text in place of the owner.
+  const channel = onOpenPlaylist && item.channel.trim().toLowerCase() === playlistLabel.toLowerCase() ? '' : item.channel;
   return <article className={`video-card ${row ? 'video-row' : ''} ${item.kind === 'channel' ? 'channel-card' : ''}`}>
     <button className="thumbnail-button" onClick={() => onActivate(item)} aria-label={`${item.kind === 'video' || onOpenPlaylist ? 'Play' : 'Open'} ${item.title}`} aria-busy={starting || undefined}><Thumbnail item={item} /></button>
     <div className="video-card-body"><div className="card-copy"><button className="video-title text-button" onClick={() => onActivate(item)} title={item.title}>{item.title}</button>
-      {item.channel && (onOpenChannel
-        ? <button type="button" className="video-channel text-button card-channel-link" title={item.channel} onClick={() => onOpenChannel(item)}>{item.channel}</button>
-        : <div className="video-channel">{item.channel}</div>)}
+      {channel && (onOpenChannel
+        ? <button type="button" className="video-channel text-button card-channel-link" title={channel} onClick={() => onOpenChannel(item)}>{channel}</button>
+        : <div className="video-channel">{channel}</div>)}
       <div className="video-meta">{views(item.viewCount)}{!item.viewCount && item.kind === 'channel' ? 'Channel' : ''}</div>
-      {onOpenPlaylist && <button type="button" className="video-channel text-button card-channel-link" onClick={() => onOpenPlaylist(item)}>View full playlist</button>}
+      {onOpenPlaylist && <button type="button" className="video-channel text-button card-channel-link" onClick={() => onOpenPlaylist(item)}>{playlistLabel}</button>}
       {starting && <div className="video-meta" role="status">Starting playlist…</div>}
       {row && item.description && <p className="result-description">{item.description}</p>}
     </div>

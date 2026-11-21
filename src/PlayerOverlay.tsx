@@ -54,7 +54,7 @@ export default function PlayerOverlay() {
     onPointerDown={clicks.onPointerDown} onPointerUp={clicks.onPointerUp} onPointerCancel={clicks.onPointerCancel}>
     {!ui.mini && <div className={`player-title-gradient ${visibility.visible ? 'visible' : ''}`}><span>{player.video?.title}</span></div>}
     <div className="audio-overlay-controls" inert={!visibility.visible}>
-      <PlayerControls player={player} audio={false} compact={ui.mini} visible={visibility.visible} fullscreen={ui.fullscreen} theater={ui.theater} hasPrevious={ui.hasPrevious} hasNext={ui.hasNext} onAction={onAction} onMode={onMode} onPrevious={() => send('previous')} onNext={() => send('next')} onFullscreen={onFullscreen} onTheater={() => send('theater')} onMenuChange={visibility.onMenuChange} onDragging={visibility.onDragging} />
+      <PlayerControls player={player} audio={false} compact={ui.mini} visible={visibility.visible} fullscreen={ui.fullscreen} theater={ui.theater} hasPrevious={ui.hasPrevious} hasNext={ui.hasNext} onAction={onAction} onMode={onMode} onPrevious={() => send('previous')} onNext={() => send('next')} onFullscreen={onFullscreen} onTheater={() => send('theater')} onMinimize={() => send('minimize')} onMenuChange={visibility.onMenuChange} onDragging={visibility.onDragging} />
     </div>
     {player.status === 'buffering' && !presentation.pausedIntent && <div className="overlay-buffering" aria-label="Buffering"><LoaderCircle size={34} className="spin" /></div>}
     {error && <div className="overlay-control-error" role="status">{error}</div>}

@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { VideoRating, WatchDetails, YouTubePlaylistOption } from './types';
-import type { AppSettings, Bootstrap, BrowseKind, BrowsePage, CommentPage, CommentSort, DownloadRequest, DownloadTask, MediaCacheKind, MediaCacheSummary, MediaItem, PlaybackMode, PlayerAction, PlayerBounds, PlayerState, PlayerUiContext, PlayerPresentation, PlayerOverlayAction, SessionSnapshot, SubtitleTrack, VideoRendererMode } from './types';
+import type { AppSettings, Bootstrap, BrowseKind, BrowsePage, CommentPage, CommentSort, DownloadRequest, DownloadTask, MediaCacheContent, MediaCacheKind, MediaCacheSummary, MediaItem, PlaybackMode, PlayerAction, PlayerBounds, PlayerState, PlayerUiContext, PlayerPresentation, PlayerOverlayAction, SessionSnapshot, SubtitleTrack, VideoRendererMode } from './types';
 
 export const isDesktop = '__TAURI_INTERNALS__' in window;
 
@@ -71,7 +71,7 @@ export const api = {
   saveSettings: (settings: AppSettings) => call<AppSettings>('save_settings', { settings }),
   clearHistory: () => call<void>('clear_history'),
   cacheSummary: () => call<MediaCacheSummary>('cache_summary'),
-  cacheConfigure: (enabled: boolean, maxBytes: number) => call<MediaCacheSummary>('cache_configure', { enabled, maxBytes }),
+  cacheConfigure: (enabled: boolean, maxBytes: number, content?: MediaCacheContent) => call<MediaCacheSummary>('cache_configure', { enabled, maxBytes, content }),
   cacheClear: (kind: MediaCacheKind, entryId?: string) => call<MediaCacheSummary>('cache_clear', { kind, entryId: entryId ?? null }),
   comments: (videoId: string, cursor: string | null, sort: CommentSort, requestId: string) => call<CommentPage>('video_comments', { videoId, cursor, sort, requestId }),
   commentReplies: (videoId: string, parentId: string, cursor: string | null, sort: CommentSort, requestId: string) =>

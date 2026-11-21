@@ -235,6 +235,12 @@
 .compact-controls .seek-preview-image { --seek-frame-height: 63px; }
 .seek-preview-image img { position: absolute; max-width: none; }
 .seek-preview-caption { display: grid; min-width: 0; gap: 1px; text-align: center; font-size: 12px; line-height: 1.25; }
+.bottom-player .seek-preview-caption {
+  justify-self: center; max-width: 100%; padding: 6px 11px;
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent); border-radius: 9px;
+  background: color-mix(in srgb, var(--bg) 76%, transparent); backdrop-filter: blur(12px) saturate(1.2);
+  box-shadow: 0 3px 12px #0003; text-shadow: none;
+}
 .seek-preview-time { font-weight: 600; font-variant-numeric: tabular-nums; }
 .seek-preview-chapter { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 .compact-controls .seek-preview-chapter { -webkit-line-clamp: 1; }

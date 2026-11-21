@@ -235,6 +235,10 @@ pub fn run() {
             app.manage(std::sync::Mutex::new(guard));
             let _=tracing_subscriber::fmt().with_ansi(false).with_max_level(tracing::Level::INFO).with_writer(writer).try_init();
             let store=Arc::new(Store::new(&paths)?);
+            if !cfg!(debug_assertions) || std::env::var_os("TUBEDESK_DATA_DIR").is_none() {
+                let previous_root = handle.path().download_dir().unwrap_or_else(|_| paths.data.clone());
+                store.migrate_download_directory(&previous_root)?;
+            }
             // A killed/rebooted helper cannot still own an active task.
             for mut task in store.downloads()? {
                 if ["queued","resolving","downloading","merging","validating"].contains(&task.status.as_str()) {

@@ -51,8 +51,9 @@ export default function Application() {
   const [ready, setReady] = useState(!isDesktop);
   const [bootError, setBootError] = useState('');
   const [page, setPage] = useState<Page>({ kind: 'home' });
-  const [previousPage, setPreviousPage] = useState<Page>({ kind: 'home' });
+  const previousPage = useRef<Page>({ kind: 'home' });
   const [sidebar, setSidebar] = useState(true);
+  const [theaterNavigation, setTheaterNavigation] = useState(false);
   const [searchInput, setSearchInput] = useState('');
   const [queue, setQueue] = useState<QueueState>(emptyQueue);
   const [recommendations, setRecommendations] = useState<RecommendationSource>();
@@ -130,7 +131,7 @@ export default function Application() {
     if (!sessionChanged) return;
     sessionGenerationRef.current = session.generation; cache.clear(); commentCache.clear(); setCommentSort('top'); changeQueue(emptyQueue()); pendingAdvance.current = null;
     navTrail.current = { pages: [{ kind: 'home' }], index: 0 }; refreshNavigation(value => value + 1);
-    setHistory([]); setRecommendations(undefined); setDownloadItem(null); setClearConfirm(false); setAccountMenu(false); setSearchInput(''); setPreviousPage({ kind: 'home' });
+    setHistory([]); setRecommendations(undefined); setDownloadItem(null); setClearConfirm(false); setAccountMenu(false); setSearchInput(''); previousPage.current = { kind: 'home' };
     setPage(current => ['playlist', 'channel', 'search'].includes(current.kind) || (current.kind === 'watch' && !localPlayback.current) ? { kind: 'home' } : current);
     if (!localPlayback.current) { const reset = { ...defaultPlayer, volume: playerRef.current.volume, muted: playerRef.current.muted, speed: playerRef.current.speed, preferredPlaybackMode: playerRef.current.preferredPlaybackMode }; playerRef.current = reset; setPlayer(reset); }
     if (fullscreen) { setFullscreen(false); if (isDesktop) void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setFullscreen(false)).catch(showError); }
@@ -179,7 +180,10 @@ export default function Application() {
     const currentKind = pageBrowseKind(current);
     if (currentKind) cache.saveScroll(browseKey(sessionRef.current.generation, currentKind, current.query), window.scrollY);
     if (fullscreen && next.kind !== 'watch') { setFullscreen(false); if (isDesktop) void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setFullscreen(false)).catch(showError); }
-    if (next.kind === 'watch') setDocked(false);
+    if (next.kind === 'watch') {
+      if (current.kind !== 'watch') previousPage.current = current;
+      setDocked(false);
+    } else if (current.kind === 'watch') setTheaterNavigation(false);
     if (record && (current.kind !== next.kind || current.query !== next.query)) { const trail = navTrail.current; trail.pages = [...trail.pages.slice(0, trail.index + 1), next]; trail.index = trail.pages.length - 1; }
     else if (record && next.kind === 'channel') navTrail.current.pages[navTrail.current.index] = next;
     refreshNavigation(value => value + 1);
@@ -193,7 +197,7 @@ export default function Application() {
   }, [settings.alwaysAudioOnly, settings.rememberPlaybackMode]);
   const requestPlayback = useCallback((item: MediaItem, playbackMode?: PlaybackMode, showWatch = true) => {
     if (!isDesktop) { showError(new Error('Open Viewsical on your desktop to play videos.')); return; }
-    if (showWatch) { if (pageRef.current.kind !== 'watch') setPreviousPage(pageRef.current); navigate({ kind: 'watch' }); }
+    if (showWatch) navigate({ kind: 'watch' });
     localPlayback.current = false; pendingAdvance.current = null;
     const generation = sessionRef.current.generation, request = ++playbackRequest.current;
     const mode = startingPlaybackMode(playbackMode);
@@ -250,9 +254,31 @@ export default function Application() {
   const commentSeekDuration = player.loadId && ['playing', 'paused', 'buffering', 'ended'].includes(player.status) ? player.duration : 0;
   const changeMode = useCallback((mode: PlaybackMode) => { void api.setPlaybackMode(mode).catch(showError); }, [showError]);
   const toggleFullscreen = useCallback(() => { if (pageRef.current.kind !== 'watch') navigate({ kind: 'watch' }); const next = !fullscreen; setFullscreen(next); if (isDesktop) void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setFullscreen(next)).catch(showError); }, [fullscreen, navigate, showError]);
-  const toggleTheater = useCallback(() => { if (pageRef.current.kind !== 'watch') navigate({ kind: 'watch' }); setTheater(value => !value); }, [navigate]);
-  nativeRequest.current = request => { if (request.action === 'next') moveQueue(1); else if (request.action === 'previous') moveQueue(-1); else if (request.action === 'fullscreen') toggleFullscreen(); else if (request.action === 'theater') toggleTheater(); else if (request.action === 'scroll') { if (!fullscreen && Number.isFinite(request.value)) window.scrollBy({ top: request.value, behavior: 'instant' }); } else { if (pageRef.current.kind !== 'watch') navigate({ kind: 'watch' }); setFocusSignal(value => value + 1); } };
+  const toggleTheater = useCallback(() => {
+    if (pageRef.current.kind !== 'watch') navigate({ kind: 'watch' });
+    setTheaterNavigation(false);
+    setTheater(value => !value);
+  }, [navigate]);
+  const minimizePlayer = useCallback(() => navigate(previousPage.current), [navigate]);
+  nativeRequest.current = request => {
+    switch (request.action) {
+      case 'next': moveQueue(1); break;
+      case 'previous': moveQueue(-1); break;
+      case 'fullscreen': toggleFullscreen(); break;
+      case 'theater': toggleTheater(); break;
+      case 'minimize': if (pageRef.current.kind === 'watch') minimizePlayer(); break;
+      case 'scroll':
+        if (!fullscreen && Number.isFinite(request.value)) window.scrollBy({ top: request.value, behavior: 'instant' });
+        break;
+      case 'focus-controls':
+        if (pageRef.current.kind !== 'watch') navigate({ kind: 'watch' });
+        setFocusSignal(value => value + 1);
+        break;
+    }
+  };
   const queueIndex = selectedIndex(queue); const hasPrevious = queueIndex > 0; const hasNext = queueIndex >= 0 && (queueIndex < queue.entries.length - 1 || !!queue.nextCursor); const mini = page.kind !== 'watch';
+  const theaterWatch = theater && !mini && !!player.video;
+  const navigationOpen = theaterWatch ? theaterNavigation : sidebar;
   useEffect(() => {
     if (!isDesktop) return;
     const current = queue.entries[queueIndex];
@@ -339,7 +365,7 @@ export default function Application() {
     setToast(`Saved to ${title}`);
   }
   function playDownloaded(task: DownloadTask) {
-    setPreviousPage({ kind: 'downloads' }); setRecommendations(undefined); navigate({ kind: 'watch' }); localPlayback.current = true; changeQueue(emptyQueue());
+    setRecommendations(undefined); navigate({ kind: 'watch' }); localPlayback.current = true; changeQueue(emptyQueue());
     const request = ++playbackRequest.current;
     setPlayer(current => ({ ...current, video: task.video, subtitleTrackId: null, status: 'resolving', error: null, position: 0, playbackMode: task.mode === 'audio' ? 'audio' : startingPlaybackMode() }));
     void api.playLocal(task.id).catch(error => {
@@ -382,9 +408,9 @@ export default function Application() {
         starting={playFromCard && startingPlaylist === item.id} onDownload={setDownloadItem} onQueue={addToQueue} row={page.kind === 'search'} />;
     })}</div>{entry?.nextCursor && <ScrollLoader key={activeKey} scope={activeKey} cursor={entry.nextCursor} loading={entry.loadingMore || entry.loading} error={entry.error} onLoad={() => void cache.loadMore(activeKey).catch(() => {})} />}</>}</>;
   }
-  return <div className={`app ${sidebar ? '' : 'sidebar-compact'} ${fullscreen ? 'player-fullscreen' : ''} ${theater ? 'theater-mode' : ''} ${player.video && mini ? docked ? 'has-bottom-player' : 'has-mini-player' : ''}`}>
+  return <div className={`app ${navigationOpen ? '' : 'navigation-collapsed'} ${fullscreen ? 'player-fullscreen' : ''} ${theaterWatch ? 'theater-mode' : ''} ${player.video && mini ? docked ? 'has-bottom-player' : 'has-mini-player' : ''}`}>
     <a className="skip-link" href="#main-content">Skip to content</a>
-    <header className="topbar" data-tauri-drag-region><div className="topbar-brand" data-tauri-drag-region><IconButton label={sidebar ? 'Collapse navigation' : 'Expand navigation'} onClick={() => setSidebar(value => !value)}><Menu size={23} /></IconButton><button className="logo-button" onClick={() => navigate({ kind: 'home' })}><Logo /></button><IconButton label="Go back" disabled={navTrail.current.index === 0} onClick={() => moveNavigation(-1)}><ChevronLeft size={23} /></IconButton><IconButton label="Go forward" disabled={navTrail.current.index >= navTrail.current.pages.length - 1} onClick={() => moveNavigation(1)}><ChevronRight size={23} /></IconButton></div>
+    <header className="topbar" data-tauri-drag-region><div className="topbar-brand" data-tauri-drag-region><IconButton label={navigationOpen ? 'Collapse navigation' : 'Expand navigation'} aria-expanded={navigationOpen} aria-controls={theaterWatch ? 'main-navigation watch-navigation' : 'main-navigation'} onClick={() => theaterWatch ? setTheaterNavigation(value => !value) : setSidebar(value => !value)}><Menu size={23} /></IconButton><button className="logo-button" onClick={() => navigate({ kind: 'home' })}><Logo /></button><IconButton label="Go back" disabled={navTrail.current.index === 0} onClick={() => moveNavigation(-1)}><ChevronLeft size={23} /></IconButton><IconButton label="Go forward" disabled={navTrail.current.index >= navTrail.current.pages.length - 1} onClick={() => moveNavigation(1)}><ChevronRight size={23} /></IconButton></div>
       <div className="header-center"><form className="search-form" onSubmit={submitSearch}><div className="search-input-wrap"><label className="sr-only" htmlFor="search">Search YouTube or paste a video link</label><input ref={searchRef} id="search" value={searchInput} onChange={event => setSearchInput(event.target.value)} placeholder="Search or paste a YouTube link" autoComplete="off" spellCheck="false" />{searchInput && <IconButton label="Clear search" className="clear-search" onClick={() => { setSearchInput(''); searchRef.current?.focus(); }}><X size={19} /></IconButton>}</div><button type="submit" className="search-submit" aria-label="Search" title="Search"><Search size={22} aria-hidden="true" /></button></form></div>
       <div className="header-actions" data-tauri-drag-region><div className="header-drag-gap" data-tauri-drag-region />{!isDesktop && <span className="preview-label"><Monitor size={15} /> Preview</span>}{player.video && page.kind !== 'watch' && <IconButton label="Return to player" onClick={() => navigate({ kind: 'watch' })}><Video size={22} /></IconButton>}
         {checkingAccount ? <span className="account-avatar connected-avatar" role="status" title="Checking YouTube sign-in"><LoaderCircle size={21} className="spin" aria-hidden="true" /><span className="sr-only">Checking YouTube sign-in</span></span> : <button ref={accountButton} className={connected ? 'account-avatar connected-avatar' : 'sign-in-button'} aria-label={connected ? 'Connected account' : 'Account sign-in'} title={connected ? 'Signed in to YouTube' : 'Sign in'} aria-haspopup="menu" aria-expanded={accountMenu} onClick={() => setAccountMenu(value => !value)}>{connected ? <Check size={22} strokeWidth={2.7} /> : <><UserCircle size={21} /><span>Sign in</span></>}</button>}
@@ -393,19 +419,18 @@ export default function Application() {
       </div>
     </header>
 
-    <aside className="sidebar" aria-label="Main navigation"><nav>{navItems.map(({ kind, label, icon: Icon, count }) => <button key={kind} className={`nav-item ${(page.kind === kind || (kind === 'subscriptions' && page.kind === 'channels') || (kind === 'playlists' && page.kind === 'playlist')) ? 'active' : ''}`} title={!sidebar ? label : undefined} aria-current={page.kind === kind ? 'page' : undefined} onClick={() => navigate({ kind })}><Icon size={22} strokeWidth={page.kind === kind ? 2 : 1.65} /><span>{label}</span>{!!count && <span className="nav-count">{count}</span>}</button>)}</nav>
+    <aside id="main-navigation" className="sidebar" aria-label="Main navigation" hidden={!navigationOpen}><nav>{navItems.map(({ kind, label, icon: Icon, count }) => <button key={kind} className={`nav-item ${(page.kind === kind || (kind === 'subscriptions' && page.kind === 'channels') || (kind === 'playlists' && page.kind === 'playlist')) ? 'active' : ''}`} aria-current={page.kind === kind ? 'page' : undefined} onClick={() => navigate({ kind })}><Icon size={22} strokeWidth={page.kind === kind ? 2 : 1.65} /><span>{label}</span>{!!count && <span className="nav-count">{count}</span>}</button>)}</nav>
       <div className="sidebar-rule" />
-      {sidebar && <div className="sidebar-library"><div className="sidebar-section-label">Your library</div><button className={`nav-item ${page.kind === 'watch' ? 'active' : ''}`} disabled={!player.video} onClick={() => navigate({ kind: 'watch' })}><Video size={22} strokeWidth={1.65} /><span>Now playing</span>{player.status === 'playing' && <span className="playing-bars"><i /><i /><i /></span>}</button>{queue.entries.length > 0 && <div className="queue-count">{queue.entries.length} {queue.entries.length === 1 ? 'video' : 'videos'} in your queue</div>}</div>}
+      <div className="sidebar-library"><div className="sidebar-section-label">Your library</div><button className={`nav-item ${page.kind === 'watch' ? 'active' : ''}`} disabled={!player.video} onClick={() => navigate({ kind: 'watch' })}><Video size={22} strokeWidth={1.65} /><span>Now playing</span>{player.status === 'playing' && <span className="playing-bars"><i /><i /><i /></span>}</button>{queue.entries.length > 0 && <div className="queue-count">{queue.entries.length} {queue.entries.length === 1 ? 'video' : 'videos'} in your queue</div>}</div>
       <button className={`nav-item ${page.kind === 'localPlaylists' || page.kind === 'localPlaylist' ? 'active' : ''}`} aria-current={page.kind === 'localPlaylists' ? 'page' : undefined} onClick={() => navigate({ kind: 'localPlaylists' })}><ListVideo size={22} strokeWidth={1.65} /><span>Local playlists</span></button>
-      {!connected && !checkingAccount && sidebar && <div className="sidebar-signin"><p>Bring your subscriptions and playlists with you.</p><button className="sign-in-button" onClick={() => void openSignIn()}><UserCircle size={20} />Sign in</button></div>}
-      <div className="sidebar-bottom"><button className={`nav-item ${page.kind === 'settings' ? 'active' : ''}`} title={!sidebar ? 'Settings' : undefined} onClick={() => navigate({ kind: 'settings' })}><Settings size={22} strokeWidth={1.65} /><span>Settings</span></button>{sidebar && <p>Viewsical <span>{version}</span><br /><small>Your library stays on this device.</small></p>}</div>
+      {!connected && !checkingAccount && <div className="sidebar-signin"><p>Bring your subscriptions and playlists with you.</p><button className="sign-in-button" onClick={() => void openSignIn()}><UserCircle size={20} />Sign in</button></div>}
+      <div className="sidebar-bottom"><button className={`nav-item ${page.kind === 'settings' ? 'active' : ''}`} onClick={() => navigate({ kind: 'settings' })}><Settings size={22} strokeWidth={1.65} /><span>Settings</span></button><p>Viewsical <span>{version}</span><br /><small>Your library stays on this device.</small></p></div>
     </aside>
     <main id="main-content" className={`main-content ${page.kind === 'watch' ? 'watch-content' : ''}`}>
       {bootError && <div className="banner error-banner" role="alert"><AlertCircle size={20} /><div><strong>Viewsical couldnâ€™t finish starting</strong><p>{bootError}</p></div><button className="button secondary small" onClick={() => void refreshBootstrap()}>Retry</button></div>}
       {missingTools.length > 0 && page.kind !== 'settings' && <div className="banner"><SlidersHorizontal size={20} /><div><strong>Media tools need setup</strong><p>Some playback or download tools are missing.</p></div><button className="button secondary small" onClick={() => navigate({ kind: 'settings' })}>View settings</button></div>}
       <div className={page.kind === 'watch' ? 'watch-layout' : 'page-layout'}><div className={page.kind === 'watch' ? 'watch-main' : 'route-body'}>
-        {page.kind === 'watch' && <div className="watch-topline" key="watch-topline"><button className="back-button" onClick={() => navigate(previousPage)}><ArrowLeft size={18} />Back</button><span className="watch-source"><span className={player.status === 'playing' ? 'status-dot active' : 'status-dot'} />{player.status === 'resolving' ? 'Preparing video' : player.status === 'playing' ? 'Now playing' : player.status === 'paused' ? 'Paused' : 'Video player'}</span></div>}
-        <PlayerHost key="persistent-player" player={player} mini={mini} docked={mini && docked} onDock={() => setDocked(true)} onUndock={() => setDocked(false)} fullscreen={fullscreen} theater={theater} blocked={blocked} hasPrevious={hasPrevious} hasNext={hasNext} focusSignal={focusSignal} onAction={action} onMode={changeMode} onPrevious={() => moveQueue(-1)} onNext={() => moveQueue(1)} onFullscreen={toggleFullscreen} onTheater={toggleTheater} onExpand={() => navigate({ kind: 'watch' })} onClose={closePlayer} onRetry={() => { if (player.video) requestPlayback(player.video); }} />
+        <PlayerHost key="persistent-player" player={player} mini={mini} docked={mini && docked} onDock={() => setDocked(true)} onUndock={() => setDocked(false)} fullscreen={fullscreen} theater={theater} blocked={blocked} hasPrevious={hasPrevious} hasNext={hasNext} focusSignal={focusSignal} onAction={action} onMode={changeMode} onPrevious={() => moveQueue(-1)} onNext={() => moveQueue(1)} onFullscreen={toggleFullscreen} onTheater={toggleTheater} onMinimize={minimizePlayer} onExpand={() => navigate({ kind: 'watch' })} onClose={closePlayer} onRetry={() => { if (player.video) requestPlayback(player.video); }} />
         {page.kind === 'watch' ? player.video ? <><WatchInfo key={`${player.video.id}:${session.generation}:${session.status}`} video={player.video} session={session} position={player.position} resolving={player.status === 'resolving'} onOpenChannel={openVideoChannel} onSubscriptionChange={refreshSubscriptionLibrary} onSignIn={openSignIn} onSaved={playlistSaved} onDownload={setDownloadItem} /><CommentsPanel videoId={player.video.id} generation={session.generation} cache={commentCache} sort={commentSort} onSort={setCommentSort} duration={commentSeekDuration} onSeek={seekFromComment} onOpenAuthor={(query, title, thumbnail) => navigate({ kind: 'channel', query, title, channelThumbnail: thumbnail })} /></> : <EmptyState icon={Video} title="Nothing is playing yet" action={<button className="button primary" onClick={() => navigate({ kind: 'home' })}>Find a video</button>}>Search for a video or open one from your downloads.</EmptyState> : <div key="browse-content">
           {page.kind === 'channel' ? <ChannelProfile key={page.query} channel={entry?.channel ?? cachedChannel} query={page.query}
             fallbackTitle={page.title} fallbackAvatar={page.channelThumbnail} tab={page.channelTab ?? 'home'}
@@ -415,7 +440,7 @@ export default function Application() {
             {(!page.channelTab || page.channelTab === 'home') && items.length > 0 && <h2>Channel highlights</h2>}
             {browseContent()}
           </ChannelProfile> :
-          <div className="page-heading"><div>{page.kind === 'playlist' && <button className="back-button" onClick={() => moveNavigation(-1)}><ArrowLeft size={17} />Back</button>}<h1 tabIndex={-1}>{page.kind === 'playlist' ? 'Playlist' : page.title || titles[page.kind] || 'Videos'}{page.kind === 'search' && <span className="query-subtitle">{page.query}</span>}</h1>{page.kind === 'downloads' && <p>Ready to watch, even when youâ€™re offline.</p>}{page.kind === 'history' && <p>Your watch history is saved on this device.</p>}</div><div className="heading-actions">{browseKinds.has(page.kind) && <IconButton label="Refresh videos" disabled={!canBrowse || loading} onClick={refreshPage}><RefreshCw size={19} className={loading ? 'spin' : ''} /></IconButton>}{page.kind === 'history' && history.length > 0 && <button className="button secondary small" onClick={() => setClearConfirm(true)}><Trash2 size={16} />Clear history</button>}</div></div>}
+          <div className="page-heading"><div>{page.kind === 'playlist' && <button className="back-button" onClick={() => moveNavigation(-1)}><ArrowLeft size={17} />Back</button>}<h1 tabIndex={-1}>{page.kind === 'playlist' ? 'Playlist' : page.title || titles[page.kind] || 'Videos'}{page.kind === 'search' && <span className="query-subtitle">{page.query}</span>}</h1>{page.kind === 'downloads' && <p>Ready to watch, even when you’re offline.</p>}{page.kind === 'history' && <p>Your watch history is saved on this device.</p>}</div><div className="heading-actions">{browseKinds.has(page.kind) && <IconButton label="Refresh videos" disabled={!canBrowse || loading} onClick={refreshPage}><RefreshCw size={19} className={loading ? 'spin' : ''} /></IconButton>}{page.kind === 'history' && history.length > 0 && <button className="button secondary small" onClick={() => setClearConfirm(true)}><Trash2 size={16} />Clear history</button>}</div></div>}
           {['subscriptions', 'channels'].includes(page.kind) && <div className="page-tabs" aria-label="Subscription view"><button className={page.kind === 'subscriptions' ? 'selected' : ''} aria-pressed={page.kind === 'subscriptions'} onClick={() => navigate({ kind: 'subscriptions' })}>Latest videos</button><button className={page.kind === 'channels' ? 'selected' : ''} aria-pressed={page.kind === 'channels'} onClick={() => navigate({ kind: 'channels' })}>Channels</button></div>}
           {page.kind !== 'channel' && browseKinds.has(page.kind) && browseContent()}
           {page.kind === 'localPlaylists' && <LocalPlaylists onOpen={collection => navigate({ kind: 'localPlaylist', query: collection.id, collection })} />}
@@ -424,7 +449,7 @@ export default function Application() {
           {page.kind === 'history' && <HistoryPanel entries={history} onPlay={play} onDownload={setDownloadItem} />}
           {page.kind === 'settings' && <SettingsPanel settings={settings} session={session} checkingAccount={checkingAccount} tools={tools} onSave={next => void saveSettings(next)} onSignIn={() => void openSignIn()} onSignOut={signOut} onClearHistory={() => setClearConfirm(true)} onError={showError} />}
         </div>}
-      </div>{page.kind === 'watch' && player.video && <aside className="watch-aside">
+      </div>{page.kind === 'watch' && player.video && <aside id="watch-navigation" className="watch-aside" aria-label="Queue and recommendations" hidden={theaterWatch && !theaterNavigation}>
         <QueuePanel queue={queue} onSelect={selectQueue} onRemove={id => changeQueue(current => ({ ...current, entries: current.entries.filter(value => value.entryId !== id) }))} onClear={() => { const selected = queue.entries.find(value => value.entryId === queue.selectedEntryId); changeQueue({ ...emptyQueue(), id: crypto.randomUUID(), entries: selected ? [selected] : [], selectedEntryId: selected?.entryId ?? null }); }} onMore={() => loadQueuePage()} onRetry={() => loadQueuePage(true)} />
         <WatchRecommendations cache={cache} generation={session.generation} canBrowse={canBrowse}
           entries={queue.source ? queue.entries : undefined} video={player.video} topic={queue.source?.collection?.title}
@@ -432,7 +457,7 @@ export default function Application() {
           onPlay={(item, source) => { setRecommendations(source); play(item); }} onQueue={addToQueue} />
       </aside>}</div>
     </main>
-    <BackToTop enabled={page.kind === 'home' || page.kind === 'playlist' || page.kind === 'localPlaylist'} pageKey={activeKey || page.kind} />
+    <BackToTop enabled={page.kind === 'home' || page.kind === 'search' || page.kind === 'playlist' || page.kind === 'localPlaylist'} pageKey={activeKey || page.kind} />
     {downloadItem && <DownloadDialog item={downloadItem} settings={settings} player={player} onClose={() => setDownloadItem(null)} onAdded={task => { updateDownload(task); setToast('Download added'); }} onError={showError} />}
     {signInOpen && <Modal title="Sign in to YouTube" onClose={() => setSignInOpen(false)}><div className="signin-illustration"><UserCircle size={43} strokeWidth={1.4} /><span className="signin-connector" /><span className="brand-mark"><Play size={19} fill="currentColor" strokeWidth={0} /></span></div><p className="modal-intro">Finish signing in in the YouTube window, then return here to connect your account.</p><div className="info-note"><ShieldCheck size={20} /><p>Your session is managed on this computer. Viewsical does not ask for or store your Google password.</p></div><div className="signin-warning"><AlertCircle size={18} /><p>Google may block sign-in in embedded browsers. If that happens, account features will be unavailable. You can still search, play, and download public videos.</p></div>{(signInError || session.status === 'blocked') && <div className="inline-error" role="alert"><AlertCircle size={18} /><span>{signInError || session.message}</span></div>}<button className="text-link reopen-link" disabled={signInBusy} onClick={() => void openSignIn()}><ExternalLink size={16} />Reopen YouTube sign-in</button><div className="modal-footer"><button className="button secondary" onClick={() => setSignInOpen(false)}>Continue without account</button><button className="button primary" disabled={signInBusy} onClick={() => void completeSignIn()}>{signInBusy ? <LoaderCircle size={17} className="spin" /> : <Check size={17} />}{signInBusy ? 'Checkingâ€¦' : 'I have signed in'}</button></div></Modal>}
     {clearConfirm && <Modal title="Clear watch history?" onClose={() => setClearConfirm(false)}><p className="modal-intro">This removes your local watch history from Viewsical. Your downloaded files and YouTube account are unaffected.</p><div className="modal-footer"><button className="button secondary" onClick={() => setClearConfirm(false)}>Keep history</button><button className="button primary" onClick={() => { void api.clearHistory().then(() => { setHistory([]); setClearConfirm(false); setToast('Watch history cleared'); }).catch(showError); }}>Clear history</button></div></Modal>}

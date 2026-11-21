@@ -1,5 +1,14 @@
 # Changelog
 
+## Viewsical 0.1.18 — 21 November 2026
+
+- Show one View full playlist action on playlist cards.
+- Give theater mode the full window width. Use the top navigation button to reveal the queue and recommendations.
+- Minimize playback back to the previous page. Use distinct icons for minimize and exit fullscreen.
+- Add Back to top to search results and a translucent chapter and time preview to the bottom player.
+- Choose audio and video, audio only, or video only for new replay cache files.
+- Save new downloads in Viewsical’s local app data by default and fix the Downloads subtitle. Custom download locations and existing library entries are preserved.
+
 ## Viewsical 0.1.17 — 21 November 2026
 
 - Improve YouTube subscription checks on watch and channel pages. Use Check status to verify an uncertain change.

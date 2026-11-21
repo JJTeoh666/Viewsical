@@ -3,6 +3,7 @@ use crate::{
     runtime::{now, AppPaths},
 };
 use rusqlite::{params, Connection, OptionalExtension};
+use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
@@ -57,6 +58,22 @@ impl Store {
     pub fn settings(&self) -> AppResult<AppSettings> {
         let db = self.db.lock().map_err(AppError::io)?;
         self.read_settings(&db)
+    }
+    pub fn migrate_download_directory(&self, previous_root: &Path) -> AppResult<()> {
+        let mut db = self.db.lock().map_err(AppError::io)?;
+        let transaction = db.transaction().map_err(AppError::io)?;
+        let mut settings = self.read_settings(&transaction)?;
+        let saved = Path::new(&settings.download_directory);
+        if ["TubeDesk", "Viewsical"]
+            .iter()
+            .any(|name| saved == previous_root.join(name))
+        {
+            settings
+                .download_directory
+                .clone_from(&self.defaults.download_directory);
+            write_settings(&transaction, &settings)?;
+        }
+        transaction.commit().map_err(AppError::io)
     }
     pub fn local_playlists(&self) -> AppResult<Vec<CollectionSummary>> {
         let db = self.db.lock().map_err(AppError::io)?;
@@ -267,6 +284,35 @@ fn write_preferred_playback_mode(db: &Connection, mode: &str) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_download_defaults_move_to_app_storage_and_custom_folders_stay_selected() {
+        let dir = std::env::temp_dir().join(format!("viewsical-downloads-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = AppPaths {
+            data: dir.clone(),
+            auth: dir.join("auth"),
+            temp: dir.join("tmp"),
+            downloads: dir.join("downloads"),
+        };
+        let previous_root = dir.join("user").join("Downloads");
+        let store = Store::new(&paths).unwrap();
+        let mut settings = store.settings().unwrap();
+        assert_eq!(Path::new(&settings.download_directory), paths.downloads);
+        for old_name in ["TubeDesk", "Viewsical"] {
+            settings.download_directory = previous_root.join(old_name).to_string_lossy().into();
+            store.save_settings(&settings, None).unwrap();
+            store.migrate_download_directory(&previous_root).unwrap();
+            assert_eq!(Path::new(&store.settings().unwrap().download_directory), paths.downloads);
+        }
+        let custom = previous_root.join("Personal videos");
+        settings.download_directory = custom.to_string_lossy().into();
+        store.save_settings(&settings, None).unwrap();
+        store.migrate_download_directory(&previous_root).unwrap();
+        assert_eq!(Path::new(&store.settings().unwrap().download_directory), custom);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn local_playlists_survive_reopening_and_reimport_replaces_the_snapshot() {
         let dir = std::env::temp_dir().join(format!("viewsical-local-playlist-{}", uuid::Uuid::new_v4()));

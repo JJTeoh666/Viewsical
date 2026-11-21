@@ -137,7 +137,7 @@ try {
   check('Playback near loaded end obtains only the needed next page',await page.locator('.queue-item.current strong').textContent()==='Fixture video 96'&&(await calls('playlist')).length===6);
   await page.getByRole('button',{name:/Fixture video 120 Fixture Music/}).click();const countBefore=(await calls('playlist')).length;check('Last playlist item disables Next',await page.locator('.accessible-controls [aria-label="Next video"]').isDisabled());
   check('Exhausted playlist stops requesting pages',(await calls('playlist')).length===countBefore&&await page.locator('.queue-list .scroll-loader').count()===0);
-  await page.getByRole('button',{name:'Back',exact:true}).click();await page.getByRole('heading',{name:'Evening listening',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Go back',exact:true}).click();await page.getByRole('heading',{name:'Evening listening',exact:true}).waitFor();
   check('Queue loading shares cached playlist pages without duplication',await page.locator('.playlist-row').count()===120&&(await calls('playlist')).length===6);
   await page.getByRole('button',{name:'Home',exact:true}).click();await page.getByRole('heading',{name:'Home',exact:true}).waitFor();
   check('Home loaded pages survive navigation without reload',await page.locator('.video-card').count()===72&&(await calls('home')).length===3);

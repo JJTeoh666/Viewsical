@@ -73,6 +73,7 @@ pub enum OverlayAction {
     Previous,
     Fullscreen,
     Theater,
+    Minimize,
     FocusControls,
     Scroll,
 }
@@ -93,6 +94,7 @@ impl OverlayAction {
             Self::Previous => "previous",
             Self::Fullscreen => "fullscreen",
             Self::Theater => "theater",
+            Self::Minimize => "minimize",
             Self::FocusControls => "focus-controls",
             Self::Scroll => "scroll",
         }
@@ -110,6 +112,7 @@ impl OverlayAction {
                 | Self::Previous
                 | Self::Fullscreen
                 | Self::Theater
+                | Self::Minimize
                 | Self::FocusControls
                 | Self::Scroll
         )
@@ -2684,7 +2687,7 @@ impl PlayerManager {
             } else {
                 None
             };
-            if action == OverlayAction::FocusControls {
+            if matches!(action, OverlayAction::FocusControls | OverlayAction::Minimize) {
                 if let Some(main) = app.get_webview_window("main") {
                     let _ = main.set_focus();
                 }

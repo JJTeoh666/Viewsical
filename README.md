@@ -42,7 +42,9 @@ Video and audio use the same React controls and Lucide icons. The in-page render
 
 Playback can save full audio and video components in the background for items with a known duration of five minutes or less. Caching starts once playback has buffered enough media and stops when seeking or buffering. Only complete files with validated tracks and duration become reusable cache entries. Replay opens matching local components before resolving another online source, including after restarting Viewsical. Explicit Downloads can save longer items for offline playback.
 
-**Settings → Media cache** shows audio, video and in-progress storage. Turn automatic caching on/off, choose a size limit (2 GB by default), clear audio/video/all media, or remove an individual file. Older unused media is evicted as space is needed. Files currently playing are removed after the player releases them. Clearing media cache preserves downloads, sign-in and local history. Account changes clear account-scoped media.
+**Settings → Media cache** shows audio, video and in-progress storage. Choose whether to cache audio and video, audio only, or video only. Video-only caching saves a single playable video file with sound. Choose a size limit (2 GB by default), turn off automatic caching, clear audio/video/all media, or remove an individual file. Older unused media is evicted as space is needed. Files currently playing are removed after the player releases them. Clearing media cache preserves downloads, sign-in and local history. Account changes clear account-scoped media.
+
+New downloads go into the `downloads` folder in Viewsical’s local app data by default. You can choose a different location under **Settings → Downloads**. Existing downloads stay linked to their saved files.
 
 The watch page shows read-only YouTube comments, with Top/Newest order, Load more, refresh and retry. Comments are loaded in pages of 20 up to 300 per order and cached in memory until closing the app. There are no posting, like or reply actions. Disabled comments and unavailable responses have distinct states.
 

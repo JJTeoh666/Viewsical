@@ -3,7 +3,7 @@ import { AlertCircle, ChevronDown, HardDrive, Headphones, LoaderCircle, RefreshC
 import { api, isDesktop } from './api';
 import { bytes, errorMessage, relativeDate } from './format';
 import { IconButton } from './ui';
-import type { MediaCacheKind, MediaCacheSummary } from './types';
+import type { MediaCacheContent, MediaCacheKind, MediaCacheSummary } from './types';
 import { cacheUsage, cacheLimits as limits, GiB } from './mediaCache';
 
 export function MediaCachePanel({ generation }: { generation: number }) {
@@ -32,9 +32,9 @@ export function MediaCachePanel({ generation }: { generation: number }) {
   // The storage partition follows the account generation, independently of navigation.
   }, [generation]);
 
-  async function configure(enabled: boolean, maxBytes: number) {
+  async function configure(enabled: boolean, maxBytes: number, content?: MediaCacheContent) {
     const token = ++revision.current; const session = generationRef.current; setBusy('configure'); setError(''); setNotice('');
-    try { const data = await api.cacheConfigure(enabled, maxBytes); if (mounted.current && session === generationRef.current) { if (token === revision.current) setSummary(data); setNotice(enabled ? 'Cache settings saved.' : 'Media caching is off. Existing cached media is kept until you clear it.'); } }
+    try { const data = await api.cacheConfigure(enabled, maxBytes, content); if (mounted.current && session === generationRef.current) { if (token === revision.current) setSummary(data); setNotice(enabled ? 'Cache settings saved.' : 'Media caching is off. Existing cached media is kept until you clear it.'); } }
     catch (failure) { if (mounted.current && session === generationRef.current) setError(errorMessage(failure)); }
     finally { if (mounted.current && session === generationRef.current) setBusy(null); }
   }
@@ -53,6 +53,13 @@ export function MediaCachePanel({ generation }: { generation: number }) {
     <p className="settings-note cache-intro">Keep audio and video in the app’s storage for replay. This cache is separate from your saved downloads.</p>
     {!isDesktop ? <p className="settings-note">Cache controls are available in the desktop app.</p> : !summary && !error ? <div className="cache-loading" role="status"><LoaderCircle size={18} className="spin" />Checking cached media…</div> : summary && <>
       <div className="setting-row"><div><label className="setting-title" htmlFor="media-cache-enabled">Store media for replay</label><p>Items up to 5 minutes long can be cached in the background. This uses additional network data.</p></div><label className="cache-switch"><input id="media-cache-enabled" type="checkbox" role="switch" checked={summary.enabled} disabled={!!busy} onChange={event => void configure(event.target.checked, summary.maxBytes)} /><span aria-hidden="true" /></label></div>
+      <div className="setting-row">
+        <div><label className="setting-title" htmlFor="media-cache-content">What to cache</label><p id="media-cache-content-hint">Video-only caching saves playable videos with sound. This choice applies to new cache files.</p></div>
+        <select id="media-cache-content" aria-describedby="media-cache-content-hint" value={summary.content ?? 'both'} disabled={!!busy || !summary.enabled}
+          onChange={event => void configure(summary.enabled, summary.maxBytes, event.target.value as MediaCacheContent)}>
+          <option value="both">Audio and video</option><option value="audio">Audio only</option><option value="video">Video only</option>
+        </select>
+      </div>
       <div className="setting-row"><div><strong>Cache size limit</strong><p>Older unused media is removed when space is needed.</p></div><select aria-label="Cache size limit" value={summary.maxBytes} disabled={!!busy} onChange={event => void configure(summary.enabled, Number(event.target.value))}>{availableLimits.map(value => <option value={value} key={value}>{value < GiB ? '512 MB' : `${value / GiB} GB`}</option>)}</select></div>
       <div className="cache-usage-heading"><strong>{bytes(summary.totalBytes)} <span>of {bytes(summary.maxBytes)}</span></strong><span>{summary.entryCount.toLocaleString()} cached {summary.entryCount === 1 ? 'file' : 'files'}</span></div>
       <div className="cache-usage-bar" role="meter" aria-label="Cache storage used" aria-valuemin={0} aria-valuemax={summary.maxBytes} aria-valuenow={Math.min(summary.totalBytes, summary.maxBytes)} aria-valuetext={`${bytes(summary.totalBytes)} used of ${bytes(summary.maxBytes)}`}><span className="cache-audio-segment" style={{ width: `${usage.audio}%` }} /><span className="cache-video-segment" style={{ width: `${usage.video}%` }} /><span className="cache-pending-segment" style={{ width: `${usage.pending}%` }} /></div>

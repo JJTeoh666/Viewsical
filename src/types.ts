@@ -137,7 +137,8 @@ export interface DownloadRequest {
 export interface HistoryItem { video: MediaItem; duration: number; updatedAt: number }
 export interface ToolStatus { name: string; available: boolean; version: string | null }
 export interface MediaCacheEntry { id: string; videoId: string; title: string; mode: string; quality: number; bytes: number; lastAccessed: number; pinned: boolean }
-export interface MediaCacheSummary { enabled: boolean; maxBytes: number; totalBytes: number; audioBytes: number; videoBytes: number; pendingBytes: number; entryCount: number; activeCount: number; entries: MediaCacheEntry[] }
+export type MediaCacheContent = 'both' | 'audio' | 'video';
+export interface MediaCacheSummary { enabled: boolean; content: MediaCacheContent; maxBytes: number; totalBytes: number; audioBytes: number; videoBytes: number; pendingBytes: number; entryCount: number; activeCount: number; entries: MediaCacheEntry[] }
 export type MediaCacheKind = 'all' | 'audio' | 'video';
 export type CommentSort = 'top' | 'newest';
 export interface VideoComment { id: string; author: string; authorChannelId?: string | null; authorThumbnail: string | null; text: string; likeCount: number | null; replyCount: number | null; hasReplies?: boolean; published: string | null; authorIsUploader: boolean; isPinned: boolean }
@@ -153,8 +154,9 @@ export interface PlayerBounds { x: number; y: number; width: number; height: num
 export type VideoRendererMode = 'canvas' | 'native';
 export interface PlayerUiContext { hasPrevious: boolean; hasNext: boolean; mini: boolean; theater: boolean; fullscreen: boolean }
 export interface PlayerPresentation { revision: number; player: PlayerState; ui: PlayerUiContext; pausedIntent: boolean; overlayError: string | null }
-export type PlayerOverlayAction = PlayerAction | 'mode' | 'next' | 'previous' | 'fullscreen' | 'theater' | 'focus-controls' | 'scroll';
-export interface PlayerUiRequest { loadId: number; action: 'next' | 'previous' | 'fullscreen' | 'theater' | 'focus-controls' | 'scroll'; value?: number }
+type PlayerUiAction = 'next' | 'previous' | 'fullscreen' | 'theater' | 'minimize' | 'focus-controls' | 'scroll';
+export type PlayerOverlayAction = PlayerAction | 'mode' | PlayerUiAction;
+export interface PlayerUiRequest { loadId: number; action: PlayerUiAction; value?: number }
 export type ChannelTab = 'home' | 'videos' | 'live' | 'playlists';
 export type BrowseKind = 'home' | 'search' | 'subscriptions' | 'channels' | 'playlists' | 'playlist' | 'channel' | 'channel-home' | 'channel-live' | 'channel-playlists';
 export type PlayerAction = 'pause' | 'resume' | 'toggle' | 'seek' | 'volume' | 'mute' | 'speed' | 'stop' | 'quality' | 'adjust-volume';

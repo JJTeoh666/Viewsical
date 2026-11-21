@@ -1,26 +1,26 @@
 {
-  "node_count": 30,
+  "node_count": 1735,
   "unverified_node_count": 0,
-  "raw_edge_count": 61,
+  "raw_edge_count": 5096,
   "non_object_edges": 0,
   "missing_endpoint_edges": 0,
-  "dangling_endpoint_edges": 11,
-  "external_reference_edges": 0,
-  "self_loop_edges": 0,
-  "valid_candidate_edges": 50,
-  "exact_duplicate_edges": 0,
-  "directed_unique_endpoint_pairs": 50,
-  "directed_same_endpoint_collapsed_edges": 0,
-  "undirected_unique_endpoint_pairs": 50,
-  "undirected_same_endpoint_collapsed_edges": 0,
-  "same_endpoint_group_count": 0,
-  "relation_variant_groups": 0,
+  "dangling_endpoint_edges": 442,
+  "external_reference_edges": 35,
+  "self_loop_edges": 1,
+  "valid_candidate_edges": 4619,
+  "exact_duplicate_edges": 12,
+  "directed_unique_endpoint_pairs": 4425,
+  "directed_same_endpoint_collapsed_edges": 194,
+  "undirected_unique_endpoint_pairs": 4424,
+  "undirected_same_endpoint_collapsed_edges": 195,
+  "same_endpoint_group_count": 131,
+  "relation_variant_groups": 54,
   "source_file_variant_groups": 0,
-  "source_location_variant_groups": 0,
-  "context_variant_groups": 0,
+  "source_location_variant_groups": 54,
+  "context_variant_groups": 24,
   "post_build_graph_type": "Graph",
-  "post_build_node_count": 30,
-  "post_build_edge_count": 50,
+  "post_build_node_count": 1917,
+  "post_build_edge_count": 4880,
   "post_build_error": "",
   "producer_suppression": {
     "path": "C:\\Users\\jjteo\\AppData\\Roaming\\uv\\tools\\graphifyy\\Lib\\site-packages\\graphify\\extract.py",
@@ -101,5 +101,137 @@
     ],
     "error": ""
   },
-  "examples": []
+  "examples": [
+    {
+      "source": "src_tauri_src_player_playermanager",
+      "target": "src_tauri_src_player_rs_mutex",
+      "edge_count": 18,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src-tauri/src/player.rs"
+      ],
+      "source_locations": [
+        "L354",
+        "L356",
+        "L359",
+        "L365",
+        "L366",
+        "L371",
+        "L372",
+        "L373",
+        "L374",
+        "L375",
+        "L382",
+        "L383",
+        "L384",
+        "L385",
+        "L386",
+        "L387",
+        "L388",
+        "L389"
+      ],
+      "contexts": [
+        "field"
+      ]
+    },
+    {
+      "source": "src_tauri_src_video_renderer_mpv",
+      "target": "c_void",
+      "edge_count": 12,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src-tauri/src/video_renderer.rs"
+      ],
+      "source_locations": [
+        "L167",
+        "L168",
+        "L169",
+        "L170",
+        "L171",
+        "L172",
+        "L173",
+        "L174",
+        "L175",
+        "L176"
+      ],
+      "contexts": [
+        "field"
+      ]
+    },
+    {
+      "source": "src_tauri_src_youtube_gateway_youtubegateway",
+      "target": "src_tauri_src_youtube_gateway_rs_mutex",
+      "edge_count": 9,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src-tauri/src/youtube/gateway.rs"
+      ],
+      "source_locations": [
+        "L41",
+        "L42",
+        "L43",
+        "L44",
+        "L45",
+        "L46",
+        "L47",
+        "L48",
+        "L50"
+      ],
+      "contexts": [
+        "field"
+      ]
+    },
+    {
+      "source": "src_tauri_src_player_playermanager",
+      "target": "asyncmutex",
+      "edge_count": 8,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src-tauri/src/player.rs"
+      ],
+      "source_locations": [
+        "L357",
+        "L358",
+        "L360",
+        "L361",
+        "L362",
+        "L363",
+        "L364"
+      ],
+      "contexts": [
+        "field",
+        "generic_arg"
+      ]
+    },
+    {
+      "source": "src_tauri_src_player_playermanager",
+      "target": "src_tauri_src_player_rs_atomicbool",
+      "edge_count": 6,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "src-tauri/src/player.rs"
+      ],
+      "source_locations": [
+        "L377",
+        "L378",
+        "L379",
+        "L380",
+        "L381",
+        "L390"
+      ],
+      "contexts": [
+        "field"
+      ]
+    }
+  ]
 }

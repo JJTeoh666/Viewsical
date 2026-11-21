@@ -66,6 +66,116 @@ async function thumbPosition(slider) {
   });
 }
 
+async function testNavigationLayout(page, check) {
+  await page.goto('http://127.0.0.1:1423/');
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ width: 1120, height: 680 });
+  const expand = page.getByRole('button', { name: 'Expand navigation', exact: true });
+  const collapse = page.getByRole('button', { name: 'Collapse navigation', exact: true });
+  const sidebar = page.locator('.sidebar');
+  await collapse.click();
+  check('Collapsing navigation removes the sidebar and its reserved space', await sidebar.isHidden()
+    && await page.locator('main').evaluate(el => getComputedStyle(el).marginLeft === '0px'));
+  await expand.click();
+  await sidebar.waitFor();
+
+  await page.locator('#search').fill('piano and strings');
+  await page.locator('#search').press('Enter');
+  await page.locator('.result-list .video-card').last().waitFor();
+  const top = page.getByRole('button', { name: 'Back to top', exact: true });
+  check('Search hides Back to top before scrolling', await top.count() === 0);
+  await page.evaluate(() => scrollTo(0, 700));
+  await top.waitFor();
+  await page.screenshot({ path: path.join(output, 'viewsical-search-back-to-top.png') });
+  await top.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => scrollY < 2);
+  await top.waitFor({ state: 'hidden' });
+  check('Search Back to top scrolls up and focuses the results heading', await top.isHidden()
+    && await page.locator('.page-heading h1').evaluate(el => el === document.activeElement));
+
+  await page.setViewportSize(viewport);
+  await page.getByRole('button', { name: 'Play Fixture video 40', exact: true }).click();
+  await page.getByRole('button', { name: 'Listen with audio only', exact: true }).click();
+  const surface = page.locator('.full-player .player-surface');
+  const controls = surface.locator('.shared-player-controls');
+  const queue = page.locator('.watch-aside');
+  await surface.hover();
+  check('The watch header has no inline Back button or playback status label',
+    await page.locator('.watch-main .back-button, .watch-source').count() === 0);
+  const minimizeButton = controls.getByRole('button', { name: 'Minimize player', exact: true });
+  const enterFullscreen = controls.getByRole('button', { name: 'Fullscreen (F)', exact: true });
+  await enterFullscreen.waitFor();
+  check('Minimize uses a mini-player glyph and entering fullscreen has outward corners',
+    await minimizeButton.locator('svg.lucide-picture-in-picture-2').isVisible()
+    && await enterFullscreen.locator('svg.lucide-maximize').isVisible());
+  await enterFullscreen.click();
+  await page.locator('.player-fullscreen').waitFor();
+  await surface.hover();
+  const exitFullscreen = controls.getByRole('button', { name: 'Exit fullscreen (F)', exact: true });
+  await exitFullscreen.waitFor();
+  check('Fullscreen flips the icon to inward corners', await exitFullscreen.locator('svg.lucide-minimize').isVisible());
+  const toolbar = await controls.locator('.right-controls').boundingBox();
+  await page.screenshot({ path: path.join(output, 'viewsical-miniplayer-fullscreen-icons.png'), clip: {
+    x: Math.floor(toolbar.x - 170), y: Math.floor(toolbar.y - 96), width: Math.ceil(toolbar.width + 180), height: 132,
+  } });
+  await exitFullscreen.click();
+  await page.locator('.player-fullscreen').waitFor({ state: 'detached' });
+  await surface.hover();
+  await controls.getByRole('button', { name: 'Theater mode', exact: true }).click();
+  const wide = await surface.boundingBox();
+  check('Theater gives the player the full viewport width and hides both side panels',
+    wide.x === 0 && wide.width === page.viewportSize().width && await sidebar.isHidden() && await queue.isHidden());
+  await surface.hover();
+  await page.screenshot({ path: path.join(output, 'viewsical-theater-full-width.png') });
+  await expand.click();
+  check('Expand navigation restores the sidebar and watch queue in theater',
+    await sidebar.isVisible() && await queue.isVisible() && await queue.getByRole('heading', { name: 'Play queue' }).isVisible());
+  await page.screenshot({ path: path.join(output, 'viewsical-theater-navigation.png') });
+  await page.setViewportSize({ width: 900, height: 640 });
+  const narrowSurface = await surface.boundingBox(), narrowQueue = await queue.boundingBox();
+  check('Theater keeps the queue alongside the player at the minimum window width',
+    narrowQueue.x > narrowSurface.x + narrowSurface.width && narrowQueue.y === narrowSurface.y);
+  await page.setViewportSize(viewport);
+  await collapse.click();
+  await surface.hover();
+  await controls.getByRole('button', { name: 'Minimize player', exact: true }).click();
+  await page.locator('.result-list').waitFor();
+  check('Minimizing returns to the previous search and keeps the existing video in the mini-player',
+    await page.locator('.mini-player-title strong').textContent() === 'Fixture video 40'
+    && await page.evaluate(() => window.__fixture.calls.filter(call => call.command === 'play_video').length === 1)
+    && await sidebar.isVisible());
+}
+
+async function testCacheContent(page, check) {
+  await page.getByRole('button', { name: 'Close player', exact: true }).click();
+  const settings = page.locator('.sidebar-bottom').getByRole('button', { name: 'Settings', exact: true });
+  await settings.click();
+  const panel = page.locator('.media-cache-section');
+  const content = panel.getByRole('combobox', { name: 'What to cache', exact: true });
+  const toggle = panel.getByRole('switch', { name: 'Store media for replay' });
+  await content.waitFor();
+  check('Media cache offers both, audio only, and video only, with both selected by default',
+    await content.inputValue() === 'both' && (await content.locator('option').allTextContents()).join('|') === 'Audio and video|Audio only|Video only');
+  await content.selectOption('audio');
+  await page.waitForFunction(() => window.__fixture.cache.content === 'audio');
+  await content.selectOption('video');
+  await page.waitForFunction(() => window.__fixture.cache.content === 'video');
+  check('Changing cache content keeps the existing stored files and cache limit',
+    await page.evaluate(() => window.__fixture.cache.entryCount === 3 && window.__fixture.cache.maxBytes === 2 * 1024 ** 3));
+  await panel.screenshot({ path: path.join(output, 'viewsical-cache-content-settings.png') });
+  await toggle.uncheck();
+  await page.waitForFunction(() => !window.__fixture.cache.enabled);
+  check('Turning off automatic caching disables the picker and remembers the choice',
+    await content.isDisabled() && await content.inputValue() === 'video');
+  await toggle.check();
+  await page.waitForFunction(() => window.__fixture.cache.enabled);
+  check('Re-enabling the cache restores the selected content', await content.inputValue() === 'video');
+  await page.getByRole('button', { name: 'Downloads', exact: true }).click();
+  check('Downloads displays its offline subtitle with a readable apostrophe',
+    await page.getByText('Ready to watch, even when you’re offline.', { exact: true }).isVisible());
+}
+
 async function testWatchDetails(page, check) {
   const details = page.getByRole('region', { name: 'Video description' });
   const showMore = details.getByRole('button', { name: 'Show more' });
@@ -345,6 +455,16 @@ async function testHomeCreatorAndMix(page, check) {
   await playlist.getByRole('button', { name: 'Play Evening listening', exact: true }).click();
   await page.waitForFunction(() => window.__fixture.calls.filter(call => call.command === 'play_video').length === 2);
   check('The Playlists tab also starts playback at the first video', (await started())[1].args.item.id === 'fixture-1');
+  await back.click();
+  const liked = page.locator('.video-card').filter({ has: page.getByRole('button', { name: 'Play Liked videos', exact: true }) });
+  const fullLiked = liked.getByRole('button', { name: 'View full playlist', exact: true });
+  await fullLiked.waitFor();
+  check('Liked videos shows one View full playlist label even when YouTube supplies it as the owner',
+    await liked.getByText('View full playlist', { exact: true }).count() === 1);
+  await liked.screenshot({ path: path.join(output, 'viewsical-liked-playlist-single-button.png') });
+  await fullLiked.click();
+  await page.getByRole('heading', { name: 'Liked videos', exact: true }).waitFor();
+  check('The remaining Liked videos button opens the full list', (await started()).length === 2);
 }
 
 async function testChannelSubscription(page, check) {
@@ -654,6 +774,8 @@ async function scaledOverlayChecks(browser, output, check) {
           ? color[1] > idlePixels[i][1] + 12 && color[2] > idlePixels[i][2] + 12
           : color.every((channel, k) => channel === idlePixels[i][k])), { idlePixels, hoverPixels });
       if (scale === 1 && theme === 'dark') {
+        check('The regular video preview keeps its original caption styling',
+          await preview.locator('.seek-preview-caption').evaluate(el => getComputedStyle(el).backdropFilter === 'none'));
         await page.waitForTimeout(2700);
         check('The preview stays visible while the pointer rests on the playing timeline', await preview.locator('.seek-preview-image').isVisible());
         await page.evaluate(() => document.activeElement?.blur());
@@ -675,6 +797,10 @@ async function scaledOverlayChecks(browser, output, check) {
     if (scale === 2 && theme === 'dark') {
       await testSeekThumb(page, check);
       await testSubtitleOptions(page, check);
+      await page.mouse.move(500, 250);
+      await page.getByRole('button', { name: 'Minimize player', exact: true }).click();
+      check('The fallback video controls send a minimize request for the active playback',
+        await page.evaluate(() => window.overlayActions.at(-1)?.action === 'minimize' && window.overlayActions.at(-1)?.loadId === 1));
     }
     await context.close();
   }
@@ -693,6 +819,8 @@ try {
     });
     const playlist = { id: 'PLfixture', kind: 'playlist', title: 'Evening listening', channel: 'Fixture listener', thumbnail: art, url: 'https://www.youtube.com/playlist?list=PLfixture', duration: null, viewCount: null, description: 'A quiet collection for the end of the day.' };
     const collection = { id: 'PLfixture', title: playlist.title, owner: playlist.channel, thumbnail: art, itemCount: 120, description: playlist.description, isMix: false, url: playlist.url };
+    const liked = { ...playlist, id: 'LL', title: 'Liked videos', channel: 'View full playlist', url: 'https://www.youtube.com/playlist?list=LL' };
+    const likedCollection = { ...collection, id: liked.id, title: liked.title, owner: '', url: liked.url };
     const mix = { ...playlist, id: 'RDfixture', title: 'Mix - Nightfall Sessions', channel: '', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDfixture' };
     const mixCollection = { ...collection, id: mix.id, title: mix.title, owner: mix.channel, isMix: true, url: mix.url };
     const banner = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="230" viewBox="0 0 1200 230"><defs><linearGradient id="sky" x2="1" y2="1"><stop stop-color="#101223"/><stop offset=".7" stop-color="#293861"/><stop offset="1" stop-color="#74688e"/></linearGradient><radialGradient id="glow"><stop stop-color="#ffe1b8" stop-opacity=".5"/><stop offset="1" stop-color="#ffe1b8" stop-opacity="0"/></radialGradient></defs><path fill="url(#sky)" d="M0 0h1200v230H0z"/><circle cx="935" cy="87" r="125" fill="url(#glow)"/><circle cx="935" cy="87" r="42" fill="#f6d6b1"/><path fill="#3f5073" d="M0 159 130 84l120 56L365 43l177 100 104-50 146 78 153-50 255 63v46H0z"/><path fill="#243250" d="M0 204 180 148l125 40L479 90l120 74 143-44 122 60 144-34 192 56v28H0z"/><path fill="#161e37" d="m0 226 208-32 120 24 122-48 178 38 222-34 157 37 193-25v44H0z"/></svg>')}`;
@@ -719,7 +847,7 @@ try {
     let createdPlaylist;
     let channelSubscribed = false;
     const MiB = 1024 ** 2;
-    const cacheData = { enabled: true, maxBytes: 2 * 1024 ** 3, totalBytes: 120 * MiB, audioBytes: 16 * MiB, videoBytes: 96 * MiB, pendingBytes: 8 * MiB, entryCount: 3, activeCount: 1, entries: [
+    const cacheData = { enabled: true, content: 'both', maxBytes: 2 * 1024 ** 3, totalBytes: 120 * MiB, audioBytes: 16 * MiB, videoBytes: 96 * MiB, pendingBytes: 8 * MiB, entryCount: 3, activeCount: 1, entries: [
       { id: 'cached-audio', videoId: 'audio', title: 'Fixture cached audio', mode: 'audio', quality: 0, bytes: 16 * MiB, lastAccessed: 1780000000, pinned: false },
       { id: 'cached-video', videoId: 'video', title: 'Fixture cached video', mode: 'video', quality: 720, bytes: 64 * MiB, lastAccessed: 1780000000, pinned: false },
       { id: 'playing-cache', videoId: 'playing', title: 'Fixture currently playing', mode: 'video', quality: 1080, bytes: 32 * MiB, lastAccessed: 1780000000, pinned: true },
@@ -841,17 +969,20 @@ try {
           if (args.kind === 'subscriptions') {
             return { items: [{ ...video(15), title: 'Other creator update' }, ...(channelSubscribed ? channelItems['channel-home'].slice(0, 1) : [])], nextCursor: null };
           }
-          if (args.kind === 'playlists') return { items: [playlist], nextCursor: null };
-          if (args.kind === 'playlist') { const offset = Number(args.cursor ?? 0); if (state.failNextPlaylist && offset > 0) { state.failNextPlaylist = false; throw {message: 'Fixture network interruption'}; } return { items: Array.from({ length: 24 }, (_, i) => video(i+offset+1)), nextCursor: offset < 96 ? String(offset+24) : null, collection: args.query === mix.url ? mixCollection : collection }; }
+          if (args.kind === 'playlists') return { items: homeMix ? [playlist, liked] : [playlist], nextCursor: null };
+          if (args.kind === 'playlist') { const offset = Number(args.cursor ?? 0); if (state.failNextPlaylist && offset > 0) { state.failNextPlaylist = false; throw {message: 'Fixture network interruption'}; } return { items: Array.from({ length: 24 }, (_, i) => video(i+offset+1)), nextCursor: offset < 96 ? String(offset+24) : null, collection: args.query === mix.url ? mixCollection : args.query === liked.url ? likedCollection : collection }; }
           if (args.kind === 'search' && args.query === playlist.title) {
             const piano = { ...video(121), title: 'Soft piano for late nights', channel: 'Quiet Keys' };
             const jazz = { ...video(122), title: 'Late-night instrumental jazz', channel: 'Blue Hour Music' };
             return { items: [playlist, video(3), piano, piano, jazz], nextCursor: 'unused-search-continuation' };
           }
+          if (args.kind === 'search' && args.query === 'piano and strings') {
+            return { items: Array.from({ length: 12 }, (_, i) => video(i + 40)), nextCursor: null };
+          }
           return { items: [video(1)], nextCursor: null };
         }
         if (command === 'cache_summary') return structuredClone(cacheData);
-        if (command === 'cache_configure') { cacheData.enabled = args.enabled; cacheData.maxBytes = args.maxBytes; state.emit('cache-changed', structuredClone(cacheData)); return structuredClone(cacheData); }
+        if (command === 'cache_configure') { cacheData.enabled = args.enabled; cacheData.maxBytes = args.maxBytes; cacheData.content = args.content ?? cacheData.content; state.emit('cache-changed', structuredClone(cacheData)); return structuredClone(cacheData); }
         if (command === 'cache_clear') {
           cacheData.entries = cacheData.entries.filter(file => file.pinned || !(args.entryId ? file.id === args.entryId : args.kind === 'all' || file.mode === args.kind));
           cacheData.audioBytes = cacheData.entries.filter(file => file.mode === 'audio').reduce((sum,file) => sum+file.bytes,0);
@@ -1004,7 +1135,7 @@ try {
   check('Playback near loaded end obtains only the needed next page',await page.locator('.queue-item.current strong').textContent()==='Fixture video 96'&&(await calls('playlist')).length===6);
   await page.getByRole('button',{name:/Fixture video 120 Fixture Music/}).click();const countBefore=(await calls('playlist')).length;check('Last playlist item disables Next',await page.locator('.accessible-controls [aria-label="Next video"]').isDisabled());
   check('Watch page omits the keyboard controls button', await page.getByRole('button', { name: 'Keyboard controls', exact: true }).count() === 0);
-  await page.locator('.watch-topline .back-button').focus();
+  await page.locator('.sidebar-bottom button').focus();
   await page.keyboard.press('Tab');
   check('Tab reveals the accessible playback controls', await page.locator('.accessible-controls:focus-within').count() === 1);
   await page.keyboard.press('Shift+Tab');
@@ -1053,7 +1184,8 @@ try {
   await scrubAt(page, audioSeek, 0.53);
   await page.locator('.full-player .seek-preview-chapter').getByText('Main theme', { exact: true }).waitFor();
   await timelineScreenshot(page, audioSeek, 'timeline-hover-audio.png', 125);
-  await page.getByRole('button',{name:'Back',exact:true}).click();await page.getByRole('heading',{name:'Evening listening',exact:true}).waitFor();
+  await page.locator('.full-player .audio-overlay-controls').getByRole('button', { name: 'Minimize player', exact: true }).click();
+  await page.getByRole('heading',{name:'Evening listening',exact:true}).waitFor();
   check('Queue loading shares cached playlist pages without duplication',await page.locator('.playlist-row').count()===120&&(await calls('playlist')).length===6);
   await page.getByRole('button',{name:'Home',exact:true}).click();await page.getByRole('heading',{name:'Home',exact:true}).waitFor();
   check('Home loaded pages survive navigation without reload',await page.locator('.video-card').count()===72&&(await calls('home')).length===3);
@@ -1070,7 +1202,8 @@ try {
   check('Floating audio player keeps text-only chapter previews inside the surface',
     miniPreviewBox.y>=miniStage.y && miniPreviewBox.x+miniPreviewBox.width<=miniStage.x+miniStage.width
     && await miniPreview.locator('.seek-preview-chapter').textContent()==='Main theme'
-    && await miniPreview.locator('.seek-preview-image').count()===0);
+    && await miniPreview.locator('.seek-preview-image').count()===0
+    && await miniPreview.locator('.seek-preview-caption').evaluate(el => getComputedStyle(el).backdropFilter === 'none'));
   await page.getByRole('button',{name:'Move player to bottom bar',exact:true}).click();
   const dockedGraph = page.locator('.bottom-player-progress .seek-heatmap');
   await dockedGraph.waitFor({state:'visible'});
@@ -1101,6 +1234,11 @@ try {
   check('Docked video keeps the hover time and chapter without requesting a storyboard',
     await page.locator('.bottom-player-progress .seek-preview-chapter').textContent() === 'Overture'
     && await page.locator('.bottom-player-progress .seek-preview-image').count() === 0 && images.length === 0);
+  check('Bottom player uses translucent glass behind the chapter and time',
+    await page.locator('.bottom-player-progress .seek-preview-caption').evaluate(el => {
+      const { backgroundColor, backdropFilter } = getComputedStyle(el);
+      return backdropFilter.includes('blur(') && backgroundColor.includes('/ 0.76');
+    }));
   const screenshotTop = Math.floor(dock.y - 70);
   await page.screenshot({ path: path.join(output, 'viewsical-bottom-player-no-thumbnail.png'),
     clip: { x: 0, y: screenshotTop, width: page.viewportSize().width, height: page.viewportSize().height - screenshotTop } });
@@ -1240,6 +1378,8 @@ try {
   await testWatchActionOverflow(page, check);
   await testHomeCreatorAndMix(page, check);
   await testSubscriptionRecovery(page, check);
+  await testNavigationLayout(page, check);
+  await testCacheContent(page, check);
   await scaledOverlayChecks(browser,output,check);
   check('No browser errors',errors.length===0,errors);
 } catch(error) {

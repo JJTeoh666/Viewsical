@@ -16,20 +16,14 @@ impl AppPaths {
         } else {
             None
         };
-        let data = override_data
-            .clone()
-            .unwrap_or(app.path().app_local_data_dir().map_err(AppError::io)?);
+        let data = match override_data {
+            Some(path) => path,
+            None => app.path().app_local_data_dir().map_err(AppError::io)?,
+        };
         let paths = Self {
             auth: data.join("session"),
             temp: data.join("temporary"),
-            downloads: if override_data.is_some() {
-                data.join("downloads")
-            } else {
-                app.path()
-                    .download_dir()
-                    .unwrap_or_else(|_| data.clone())
-                    .join("Viewsical")
-            },
+            downloads: data.join("downloads"),
             data,
         };
         for path in [&paths.data, &paths.auth, &paths.temp, &paths.downloads] {

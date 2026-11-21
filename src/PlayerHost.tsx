@@ -13,13 +13,13 @@ interface Props {
   player: PlayerState; mini: boolean; docked: boolean; fullscreen: boolean; theater: boolean; blocked: boolean;
   hasPrevious: boolean; hasNext: boolean; focusSignal: number;
   onAction: (action: PlayerAction, value?: number) => void; onMode: (mode: PlaybackMode) => void;
-  onPrevious: () => void; onNext: () => void; onFullscreen: () => void; onTheater: () => void;
+  onPrevious: () => void; onNext: () => void; onFullscreen: () => void; onTheater: () => void; onMinimize?: () => void;
   onExpand: () => void; onDock: () => void; onUndock: () => void; onClose: () => void; onRetry: () => void;
 }
 
 /** Keep one playback surface mounted through Watch, mini, and docked layouts. */
 export function PlayerHost(props: Props) {
-  const { player, mini, docked, fullscreen, theater, blocked, hasPrevious, hasNext, focusSignal, onAction, onMode, onPrevious, onNext, onFullscreen, onTheater, onExpand, onDock, onUndock, onClose, onRetry } = props;
+  const { player, mini, docked, fullscreen, theater, blocked, hasPrevious, hasNext, focusSignal, onAction, onMode, onPrevious, onNext, onFullscreen, onTheater, onMinimize, onExpand, onDock, onUndock, onClose, onRetry } = props;
   const surface = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const lastBounds = useRef('');
@@ -108,7 +108,7 @@ export function PlayerHost(props: Props) {
   const showOverlayError = canvasMode ? null : overlayError;
   useEffect(() => { if (!hasVideo || audio || mini) setControlsFocused(false); }, [hasVideo, audio, mini]);
   function renderControls(compact = false, accessible = false) {
-    return <PlayerControls player={player} audio={audio} compact={compact} visible={accessible ? controlsFocused || !!showOverlayError : overlayVisible || docked} variant={accessible ? 'accessible' : 'surface'} fullscreen={fullscreen} theater={theater} hasPrevious={hasPrevious} hasNext={hasNext} onAction={onAction} onMode={onMode} onPrevious={onPrevious} onNext={onNext} onFullscreen={onFullscreen} onTheater={onTheater} onRetry={onRetry} onMenuChange={visibility.onMenuChange} onDragging={visibility.onDragging} />;
+    return <PlayerControls player={player} audio={audio} compact={compact} visible={accessible ? controlsFocused || !!showOverlayError : overlayVisible || docked} variant={accessible ? 'accessible' : 'surface'} fullscreen={fullscreen} theater={theater} hasPrevious={hasPrevious} hasNext={hasNext} onAction={onAction} onMode={onMode} onPrevious={onPrevious} onNext={onNext} onFullscreen={onFullscreen} onTheater={onTheater} onMinimize={onMinimize} onRetry={onRetry} onMenuChange={visibility.onMenuChange} onDragging={visibility.onDragging} />;
   }
   return <section className={`player-host ${hasVideo ? mini ? 'mini-player' : 'full-player' : 'player-host-empty'} ${docked ? 'bottom-player' : ''} ${audio ? 'audio-player' : ''} ${overlayVisible ? 'surface-controls-visible' : ''}`} hidden={!hasVideo} aria-label={docked ? 'Bottom player' : mini ? 'Mini player' : 'Video player'}>
     <div className={`player-surface${canvasVideo ? ' is-canvas-video' : ''}`} ref={surface} aria-hidden={docked || undefined}
