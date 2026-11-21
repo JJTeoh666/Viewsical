@@ -1,5 +1,13 @@
 # Changelog
 
+## Viewsical 0.1.17 — 21 November 2026
+
+- Improve YouTube subscription checks on watch and channel pages. Use Check status to verify an uncertain change.
+- Move Add to playlist and Download into a three-dot menu when the watch action row runs low on space.
+- Open creator profiles by clicking their names on Home.
+- Start Home mixes and cards in Playlists at the first playable video. Use View full playlist to browse the collection.
+- Show comment usernames in the normal text color and expand reply threads on demand.
+
 ## Viewsical 0.1.16 — 21 November 2026
 
 - Read subscription status from YouTube's newer channel header so the Subscribe button works on more channels.

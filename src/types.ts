@@ -140,8 +140,8 @@ export interface MediaCacheEntry { id: string; videoId: string; title: string; m
 export interface MediaCacheSummary { enabled: boolean; maxBytes: number; totalBytes: number; audioBytes: number; videoBytes: number; pendingBytes: number; entryCount: number; activeCount: number; entries: MediaCacheEntry[] }
 export type MediaCacheKind = 'all' | 'audio' | 'video';
 export type CommentSort = 'top' | 'newest';
-export interface VideoComment { id: string; author: string; authorChannelId?: string | null; authorThumbnail: string | null; text: string; likeCount: number | null; replyCount: number | null; published: string | null; authorIsUploader: boolean; isPinned: boolean }
-export interface CommentPage { videoId: string; items: VideoComment[]; nextCursor: string | null; totalCount: number | null; disabled: boolean; sort: CommentSort; limited?: boolean }
+export interface VideoComment { id: string; author: string; authorChannelId?: string | null; authorThumbnail: string | null; text: string; likeCount: number | null; replyCount: number | null; hasReplies?: boolean; published: string | null; authorIsUploader: boolean; isPinned: boolean }
+export interface CommentPage { videoId: string; parentId?: string | null; items: VideoComment[]; nextCursor: string | null; totalCount: number | null; disabled: boolean; sort: CommentSort; limited?: boolean }
 export interface Bootstrap {
   session: SessionSnapshot;
   settings: AppSettings;

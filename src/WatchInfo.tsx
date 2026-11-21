@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowDownToLine, ListPlus, Share2, ThumbsDown, ThumbsUp } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import type { KeyboardEvent } from 'react';
+import { ArrowDownToLine, Ellipsis, ListPlus, Share2, ThumbsDown, ThumbsUp } from 'lucide-react';
 import { api } from './api';
 import { ChannelSubscribe } from './ChannelSubscribe';
 import { errorMessage, views } from './format';
@@ -11,6 +12,64 @@ import './watch-actions.css';
 export type OpenVideoChannel = (item: MediaItem, avatar?: string | null) => void;
 
 const compactCount = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 2 });
+
+function WatchActionMenu({ onSave, onDownload }: { onSave: () => void; onDownload: () => void }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    menu.current?.querySelector('button')?.focus();
+    function dismiss(event: PointerEvent) {
+      if (event.target instanceof Node && !menu.current?.contains(event.target) && !trigger.current?.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [open]);
+
+  function close() {
+    trigger.current?.focus();
+    setOpen(false);
+  }
+
+  function menuKeys(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      return;
+    }
+    if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const items = Array.from(event.currentTarget.querySelectorAll('button'));
+    const index = items.findIndex(item => item === document.activeElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+      : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items[next].focus();
+  }
+
+  return <div className="watch-more" onBlur={event => {
+    if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+  }}>
+    <button ref={trigger} type="button" className="button secondary watch-more-trigger" aria-label="More video actions"
+      title="More video actions" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
+      onClick={() => setOpen(value => !value)}
+      onKeyDown={event => {
+        if (event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        if (open) menu.current?.querySelector('button')?.focus();
+        else setOpen(true);
+      }}><Ellipsis size={20} aria-hidden="true" /></button>
+    {open && <div id={id} ref={menu} className="watch-more-menu" role="menu" aria-label="More video actions" onKeyDown={menuKeys}>
+      <button type="button" role="menuitem" tabIndex={-1} onClick={() => { close(); onSave(); }}><ListPlus size={18} aria-hidden="true" />Add to playlist</button>
+      <button type="button" role="menuitem" tabIndex={-1} onClick={() => { close(); onDownload(); }}><ArrowDownToLine size={18} aria-hidden="true" />Download</button>
+    </div>}
+  </div>;
+}
 
 function VideoDescription({ description, count, date }: {
   description: string | null;
@@ -46,13 +105,14 @@ function VideoDescription({ description, count, date }: {
   </section>;
 }
 
-export function WatchInfo({ video, session, position, resolving, onOpenChannel, onSubscriptionChange, onSaved, onDownload }: {
+export function WatchInfo({ video, session, position, resolving, onOpenChannel, onSubscriptionChange, onSignIn, onSaved, onDownload }: {
   video: MediaItem;
   session: SessionSnapshot;
   position: number;
   resolving: boolean;
   onOpenChannel: OpenVideoChannel;
   onSubscriptionChange: () => void;
+  onSignIn: () => void;
   onSaved: (title: string, youtube: boolean) => void;
   onDownload: (item: MediaItem) => void;
 }) {
@@ -62,6 +122,11 @@ export function WatchInfo({ video, session, position, resolving, onOpenChannel, 
   const [ratingError, setRatingError] = useState('');
   const [sharePosition, setSharePosition] = useState<number | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
+  const [compactActions, setCompactActions] = useState(false);
+  const infoRow = useRef<HTMLDivElement>(null);
+  const creator = useRef<HTMLButtonElement>(null);
+  const primaryActions = useRef<HTMLDivElement>(null);
+  const directActions = useRef<HTMLDivElement>(null);
   const ratingUpdated = useRef(false);
   const connected = session.status === 'connected';
 
@@ -101,11 +166,43 @@ export function WatchInfo({ video, session, position, resolving, onOpenChannel, 
   const subscribers = details?.subscriberCount;
   const ratingTitle = connected ? undefined : 'Sign in to like or dislike videos';
 
+  useLayoutEffect(() => {
+    const row = infoRow.current;
+    const info = creator.current;
+    const primary = primaryActions.current;
+    const direct = directActions.current;
+    const avatar = info?.querySelector('.channel-avatar');
+    const copy = info?.querySelector('.watch-channel-copy');
+    const channelGroup = info?.parentElement;
+    const subscription = channelGroup?.querySelector('.channel-subscription');
+    const actions = primary?.parentElement;
+    if (!row || !info || !primary || !direct || !avatar || !copy || !channelGroup || !subscription || !actions) return;
+
+    const measure = () => {
+      // The direct buttons remain measurable while hidden so they can return when space opens up.
+      const copyWidth = Math.max(...Array.from(copy.children, child => child.scrollWidth));
+      const creatorWidth = avatar.getBoundingClientRect().width + parseFloat(getComputedStyle(info).columnGap) + copyWidth;
+      const required = creatorWidth + subscription.getBoundingClientRect().width
+        + primary.getBoundingClientRect().width + direct.getBoundingClientRect().width
+        + parseFloat(getComputedStyle(row).columnGap) + parseFloat(getComputedStyle(channelGroup).columnGap)
+        + parseFloat(getComputedStyle(actions).columnGap);
+      setCompactActions(required > row.getBoundingClientRect().width);
+    };
+    const observer = new ResizeObserver(measure);
+    for (const element of [row, avatar, copy, subscription, primary, direct]) observer.observe(element);
+    document.fonts.addEventListener('loadingdone', measure);
+    measure();
+    return () => {
+      observer.disconnect();
+      document.fonts.removeEventListener('loadingdone', measure);
+    };
+  }, [channel, channelId, subscribers]);
+
   return <div className="video-details">
     <h1>{video.title}</h1>
-    <div className="watch-info-row">
+    <div ref={infoRow} className="watch-info-row" data-compact-actions={compactActions || undefined}>
       <div className="watch-channel">
-        <button type="button" className="channel-info" aria-label={`Open ${channel} channel`}
+        <button ref={creator} type="button" className="channel-info" title={channel} aria-label={`Open ${channel} channel`}
           onClick={() => onOpenChannel({ ...video, channel, channelId }, details?.channelAvatar)}>
           <span className="channel-avatar" aria-hidden="true">{Array.from(channel)[0].toUpperCase()}
             {details?.channelAvatar && <img src={details.channelAvatar} alt="" referrerPolicy="no-referrer"
@@ -115,19 +212,25 @@ export function WatchInfo({ video, session, position, resolving, onOpenChannel, 
             {subscribers != null && <small title={subscribers.toLocaleString()}>{compactCount.format(subscribers)} {subscribers === 1 ? 'subscriber' : 'subscribers'}</small>}
           </span>
         </button>
-        <ChannelSubscribe key={channelId} channelId={channelId} title={channel} session={session} onChanged={onSubscriptionChange} />
+        <ChannelSubscribe key={channelId} channelId={channelId} videoId={video.id} title={channel}
+          session={session} onChanged={onSubscriptionChange} onSignIn={onSignIn} />
       </div>
       <div className="watch-actions">
-        <div className="watch-ratings" role="group" aria-label="Video rating" title={ratingTitle}>
-          <button type="button" aria-label="Like" aria-pressed={rating === 'like'} title={connected ? 'Like' : undefined}
-            disabled={!connected || ratingPending} onClick={() => void rate('like')}><ThumbsUp size={17} />{likeLabel && <span aria-hidden="true">{likeLabel}</span>}</button>
-          <button type="button" aria-label="Dislike" aria-pressed={rating === 'dislike'} title={connected ? 'Dislike' : undefined}
-            disabled={!connected || ratingPending} onClick={() => void rate('dislike')}><ThumbsDown size={17} /></button>
+        <div ref={primaryActions} className="watch-action-group">
+          <div className="watch-ratings" role="group" aria-label="Video rating" title={ratingTitle}>
+            <button type="button" aria-label="Like" aria-pressed={rating === 'like'} title={connected ? 'Like' : undefined}
+              disabled={!connected || ratingPending} onClick={() => void rate('like')}><ThumbsUp size={17} />{likeLabel && <span aria-hidden="true">{likeLabel}</span>}</button>
+            <button type="button" aria-label="Dislike" aria-pressed={rating === 'dislike'} title={connected ? 'Dislike' : undefined}
+              disabled={!connected || ratingPending} onClick={() => void rate('dislike')}><ThumbsDown size={17} /></button>
+          </div>
+          <button type="button" className="button secondary" onClick={() => setSharePosition(position)}><Share2 size={17} />Share</button>
         </div>
-        <button type="button" className="button secondary" onClick={() => setSharePosition(position)}><Share2 size={17} />Share</button>
-        <button type="button" className="button secondary" onClick={() => setSaveOpen(true)}><ListPlus size={18} />Add to playlist</button>
-        <button type="button" className="button secondary watch-download" aria-label="Download" title="Download"
-          onClick={() => onDownload(video)}><ArrowDownToLine size={19} /></button>
+        <div ref={directActions} className="watch-action-group watch-action-direct" inert={compactActions}>
+          <button type="button" className="button secondary" onClick={() => setSaveOpen(true)}><ListPlus size={18} />Add to playlist</button>
+          <button type="button" className="button secondary watch-download" aria-label="Download" title="Download"
+            onClick={() => onDownload(video)}><ArrowDownToLine size={19} /></button>
+        </div>
+        {compactActions && <WatchActionMenu onSave={() => setSaveOpen(true)} onDownload={() => onDownload(video)} />}
       </div>
     </div>
     {ratingError && <p className="watch-rating-error" role="alert">{ratingError}</p>}

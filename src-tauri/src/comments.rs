@@ -28,6 +28,7 @@ pub struct VideoComment {
     pub text: String,
     pub like_count: Option<u64>,
     pub reply_count: Option<u64>,
+    pub has_replies: bool,
     pub published: Option<String>,
     pub author_is_uploader: bool,
     pub is_pinned: bool,
@@ -37,6 +38,7 @@ pub struct VideoComment {
 #[serde(rename_all = "camelCase")]
 pub struct VideoCommentsPage {
     pub video_id: String,
+    pub parent_id: Option<String>,
     pub items: Vec<VideoComment>,
     pub next_cursor: Option<String>,
     // yt-dlp's comment_count is the number extracted within our limit, not the
@@ -56,6 +58,8 @@ struct Cursor {
     sort: String,
     offset: usize,
     anchor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_id: Option<String>,
 }
 
 fn bad_cursor() -> AppError {
@@ -81,9 +85,10 @@ fn parse_cursor(
     video_id: &str,
     sort: &str,
     generation: u64,
+    parent_id: Option<&str>,
 ) -> AppResult<Option<Cursor>> {
     let Some(value) = value else { return Ok(None) };
-    if value.len() > 1024 {
+    if value.len() > 1536 {
         return Err(bad_cursor());
     }
     let parsed: Cursor = serde_json::from_str(value).map_err(|_| bad_cursor())?;
@@ -91,6 +96,7 @@ fn parse_cursor(
         || parsed.generation != generation
         || parsed.video_id != video_id
         || parsed.sort != sort
+        || parsed.parent_id.as_deref() != parent_id
         || parsed.offset == 0
         || parsed.offset >= MAX_COMMENTS
         || !valid_comment_id(&parsed.anchor)
@@ -116,6 +122,10 @@ fn bounded_text(value: &str, limit: usize) -> String {
         .collect()
 }
 
+fn comment_parent(row: &Value) -> &str {
+    row["parent"].as_str().unwrap_or("root")
+}
+
 fn safe_thumbnail(value: &str) -> Option<String> {
     let url = url::Url::parse(value).ok()?;
     let host = url.host_str()?;
@@ -132,13 +142,6 @@ fn safe_thumbnail(value: &str) -> Option<String> {
 }
 
 fn comment_from_json(value: &Value) -> Option<VideoComment> {
-    if value
-        .get("parent")
-        .and_then(Value::as_str)
-        .is_some_and(|parent| parent != "root")
-    {
-        return None;
-    }
     let id = value.get("id")?.as_str()?;
     if !valid_comment_id(id) {
         return None;
@@ -169,6 +172,7 @@ fn comment_from_json(value: &Value) -> Option<VideoComment> {
         text,
         like_count: value.get("like_count").and_then(Value::as_u64),
         reply_count: value.get("reply_count").and_then(Value::as_u64),
+        has_replies: value.get("viewsical_has_replies").and_then(Value::as_bool).unwrap_or(false),
         published: value
             .get("_time_text")
             .and_then(Value::as_str)
@@ -191,6 +195,7 @@ fn page_from_json(
     sort: &str,
     generation: u64,
     cursor: Option<Cursor>,
+    parent_id: Option<&str>,
 ) -> AppResult<VideoCommentsPage> {
     if value.get("id").and_then(Value::as_str) != Some(video_id) {
         return Err(AppError::new(
@@ -206,17 +211,24 @@ fn page_from_json(
     })?;
     let disabled = raw.is_null();
     let mut seen = HashSet::new();
-    let comments = if disabled {
+    let comments = if disabled && parent_id.is_none() {
         Vec::new()
     } else {
-        raw.as_array()
+        let rows = raw.as_array()
             .ok_or_else(|| {
                 AppError::new(
                     "comments_unavailable",
                     "The comment response could not be read.",
                 )
-            })?
+            })?;
+        if let Some(parent) = parent_id {
+            if !rows.iter().any(|row| row["id"].as_str() == Some(parent) && comment_parent(row) == "root") {
+                return Err(bad_cursor());
+            }
+        }
+        rows
             .iter()
+            .filter(|row| comment_parent(row) == parent_id.unwrap_or("root"))
             .filter_map(comment_from_json)
             .filter(|comment| seen.insert(comment.id.clone()))
             .take(MAX_COMMENTS + 1)
@@ -249,6 +261,7 @@ fn page_from_json(
                 sort: sort.into(),
                 offset: end,
                 anchor: last.id.clone(),
+                parent_id: parent_id.map(str::to_owned),
             })
             .expect("serializing a comments cursor cannot fail")
         })
@@ -257,6 +270,7 @@ fn page_from_json(
     };
     Ok(VideoCommentsPage {
         video_id: video_id.into(),
+        parent_id: parent_id.map(str::to_owned),
         items,
         next_cursor,
         total_count: None,
@@ -274,8 +288,12 @@ pub async fn video_comments(
     cursor: Option<String>,
     sort: String,
     request_id: String,
+    parent_id: Option<String>,
 ) -> AppResult<VideoCommentsPage> {
     validate_sort(&sort)?;
+    if parent_id.as_deref().is_some_and(|id| id == "root" || !valid_comment_id(id)) {
+        return Err(AppError::new("invalid_comment", "Choose a valid comment to view its replies."));
+    }
     let normalized = normalize_video_ref(&video_id)?;
     // The command accepts a stable video identity only; playlist routing and
     // arbitrary external URLs do not belong in comment extraction.
@@ -297,15 +315,16 @@ pub async fn video_comments(
         ));
     }
     let generation = state.sessions.snapshot().generation;
-    let cursor = parse_cursor(cursor.as_deref(), &video_id, &sort, generation)?;
+    let parent_id = parent_id.as_deref();
+    let cursor = parse_cursor(cursor.as_deref(), &video_id, &sort, generation, parent_id)?;
     let limit =
         (cursor.as_ref().map_or(0, |cursor| cursor.offset) + PAGE_SIZE + 1).min(MAX_COMMENTS + 1);
     let value = state
         .gateway
-        .comments_document(&app, &video_id, &sort, limit, &request_id)
+        .comments_document(&app, &video_id, &sort, limit, parent_id, &request_id)
         .await?;
     ensure_generation(generation, state.sessions.snapshot().generation)?;
-    page_from_json(&value, &video_id, &sort, generation, cursor)
+    page_from_json(&value, &video_id, &sort, generation, cursor, parent_id)
 }
 
 #[tauri::command]
@@ -414,44 +433,45 @@ mod tests {
 
     #[test]
     fn pages_anchor_to_comment_identity_when_newest_rows_shift() {
-        let first = page_from_json(&document(21), VIDEO, "newest", 7, None).unwrap();
+        let first = page_from_json(&document(21), VIDEO, "newest", 7, None, None).unwrap();
         assert_eq!(first.items.len(), 20);
         assert_eq!(first.total_count, None);
-        let cursor = parse_cursor(first.next_cursor.as_deref(), VIDEO, "newest", 7).unwrap();
+        let cursor = parse_cursor(first.next_cursor.as_deref(), VIDEO, "newest", 7, None).unwrap();
         let mut next = document(42);
         next["comments"]
             .as_array_mut()
             .unwrap()
             .insert(0, json!({"id":"new-comment","text":"New","parent":"root"}));
-        let second = page_from_json(&next, VIDEO, "newest", 7, cursor).unwrap();
+        let second = page_from_json(&next, VIDEO, "newest", 7, cursor, None).unwrap();
         assert_eq!(second.items.first().unwrap().id, "comment-20");
     }
 
     #[test]
     fn cursors_are_bounded_and_scoped_to_video_sort_and_account_generation() {
-        let first = page_from_json(&document(21), VIDEO, "top", 7, None).unwrap();
+        let first = page_from_json(&document(21), VIDEO, "top", 7, None, None).unwrap();
         let token = first.next_cursor.as_deref();
-        assert!(parse_cursor(token, VIDEO, "top", 8).is_err());
-        assert!(parse_cursor(token, VIDEO, "newest", 7).is_err());
-        assert!(parse_cursor(token, "BaW_jenozKc", "top", 7).is_err());
-        assert!(parse_cursor(Some(&"x".repeat(1025)), VIDEO, "top", 7).is_err());
-        assert!(parse_cursor(Some("{}"), VIDEO, "top", 7).is_err());
+        assert!(parse_cursor(token, VIDEO, "top", 8, None).is_err());
+        assert!(parse_cursor(token, VIDEO, "newest", 7, None).is_err());
+        assert!(parse_cursor(token, "BaW_jenozKc", "top", 7, None).is_err());
+        assert!(parse_cursor(Some(&"x".repeat(1537)), VIDEO, "top", 7, None).is_err());
+        assert!(parse_cursor(Some("{}"), VIDEO, "top", 7, None).is_err());
     }
 
     #[test]
     fn disabled_empty_and_missing_sections_are_distinct() {
         let disabled =
-            page_from_json(&json!({"id":VIDEO,"comments":null}), VIDEO, "top", 1, None).unwrap();
+            page_from_json(&json!({"id":VIDEO,"comments":null}), VIDEO, "top", 1, None, None).unwrap();
         assert!(disabled.disabled);
-        let empty = page_from_json(&document(0), VIDEO, "top", 1, None).unwrap();
+        let empty = page_from_json(&document(0), VIDEO, "top", 1, None, None).unwrap();
         assert!(!empty.disabled);
         assert!(empty.items.is_empty());
-        assert!(page_from_json(&json!({"id":VIDEO}), VIDEO, "top", 1, None).is_err());
+        assert!(page_from_json(&json!({"id":VIDEO}), VIDEO, "top", 1, None, None).is_err());
         assert!(page_from_json(
             &json!({"id":"BaW_jenozKc","comments":[]}),
             VIDEO,
             "top",
             1,
+            None,
             None
         )
         .is_err());
@@ -468,7 +488,7 @@ mod tests {
         rows[0]["author_id"] = json!("https://example.com/channel/other");
         rows[1]["author_id"] = json!("UC1234567890123456789012");
         rows[1]["is_pinned"] = json!(true);
-        let page = page_from_json(&value, VIDEO, "top", 1, None).unwrap();
+        let page = page_from_json(&value, VIDEO, "top", 1, None, None).unwrap();
         assert_eq!(page.items.len(), 2);
         assert!(page.items[0].author_thumbnail.is_none());
         assert!(page.items[1].author_thumbnail.is_some());
@@ -480,10 +500,35 @@ mod tests {
 
     #[test]
     fn removed_anchor_requests_refresh_instead_of_silently_skipping() {
-        let first = page_from_json(&document(21), VIDEO, "top", 1, None).unwrap();
-        let cursor = parse_cursor(first.next_cursor.as_deref(), VIDEO, "top", 1).unwrap();
-        let error = page_from_json(&document(2), VIDEO, "top", 1, cursor).unwrap_err();
+        let first = page_from_json(&document(21), VIDEO, "top", 1, None, None).unwrap();
+        let cursor = parse_cursor(first.next_cursor.as_deref(), VIDEO, "top", 1, None).unwrap();
+        let error = page_from_json(&document(2), VIDEO, "top", 1, cursor, None).unwrap_err();
         assert_eq!(error.code, "comments_changed");
+    }
+
+    #[test]
+    fn reply_pages_are_scoped_to_the_requested_parent() {
+        let mut value = document(2);
+        let rows = value["comments"].as_array_mut().unwrap();
+        rows[0]["reply_count"] = json!(21);
+        rows[0]["viewsical_has_replies"] = json!(true);
+        for index in 0..21 {
+            rows.push(json!({"id":format!("reply-{index}"),"parent":"comment-0","text":"Thread reply"}));
+        }
+        rows.push(json!({"id":"unrelated","parent":"comment-1","text":"Unrelated reply"}));
+        let comments = page_from_json(&value, VIDEO, "top", 1, None, None).unwrap();
+        assert!(comments.items[0].has_replies);
+        let parent = Some("comment-0");
+        let page = page_from_json(&value, VIDEO, "top", 1, None, parent).unwrap();
+        assert_eq!(page.parent_id.as_deref(), parent);
+        assert_eq!(page.items.len(), 20);
+        let token = page.next_cursor.as_deref();
+        assert!(parse_cursor(token, VIDEO, "top", 1, Some("comment-1")).is_err());
+        let cursor = parse_cursor(token, VIDEO, "top", 1, parent).unwrap();
+        let next = page_from_json(&value, VIDEO, "top", 1, cursor, parent).unwrap();
+        assert_eq!(next.items[0].id, "reply-20");
+        assert_eq!(next.items.len(), 1);
+        assert!(page_from_json(&value, VIDEO, "top", 1, None, Some("missing")).is_err());
     }
 
     #[test]
@@ -495,8 +540,9 @@ mod tests {
             sort: "top".into(),
             offset: 280,
             anchor: "comment-279".into(),
+            parent_id: None,
         };
-        let page = page_from_json(&document(301), VIDEO, "top", 1, Some(cursor)).unwrap();
+        let page = page_from_json(&document(301), VIDEO, "top", 1, Some(cursor), None).unwrap();
         assert_eq!(page.items.len(), 20);
         assert!(page.limited);
         assert!(page.next_cursor.is_none());

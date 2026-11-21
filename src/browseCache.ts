@@ -32,6 +32,10 @@ export class BrowseCache {
     if (record.entry.attempted) return;
     await this.fetchPage(key, null);
   }
+  firstPage(key: string, kind: BrowseKind, query: string): Promise<BrowsePage> {
+    if (!this.records.has(key)) this.create(key, kind, query);
+    return this.fetchPage(key, null);
+  }
   async refresh(key: string, kind: BrowseKind, query: string): Promise<void> {
     const record = this.records.get(key) ?? this.create(key, kind, query);
     record.revision += 1; record.jobs.forEach(job => this.cancel(job.id)); record.jobs.clear(); record.pages.clear();

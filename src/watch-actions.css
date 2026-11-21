@@ -1,9 +1,9 @@
 .watch-channel {
   display: flex;
-  flex-wrap: wrap;
+  flex: 1 1 0;
   align-items: flex-start;
-  gap: 8px 16px;
-  min-width: 0;
+  gap: 16px;
+  min-width: min(100%, 190px);
 }
 .watch-channel .channel-info {
   background: transparent;
@@ -24,19 +24,56 @@
   object-fit: cover;
 }
 .watch-channel-copy { min-width: 0; }
-.watch-channel-copy strong { overflow-wrap: anywhere; }
+.watch-channel-copy strong, .watch-channel-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .watch-channel-copy small {
   display: block;
   margin-top: 3px;
   color: var(--muted);
   font-size: 12px;
 }
-.watch-channel .channel-subscription { min-width: 0; margin-top: 0; }
+.watch-channel .channel-subscription { flex: none; max-width: 60%; min-width: 0; margin-top: 0; }
 .watch-channel .channel-subscribe { min-height: 40px; }
-.watch-actions .button.watch-download {
+.watch-actions { position: relative; align-items: center; }
+.watch-action-group { display: flex; flex: none; gap: inherit; }
+[data-compact-actions] .watch-action-direct {
+  position: absolute;
+  inset-inline-end: 0;
+  visibility: hidden;
+}
+.watch-actions .button.watch-download, .watch-actions .button.watch-more-trigger {
   width: 42px;
   padding: 0;
 }
+.watch-more { position: relative; }
+.watch-more-menu {
+  position: absolute;
+  z-index: 12;
+  inset-block-start: calc(100% + 6px);
+  inset-inline-end: 0;
+  width: max-content;
+  min-width: 172px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.watch-more-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 7px 10px;
+  background: transparent;
+  border-radius: 8px;
+  text-align: start;
+}
+.watch-more-menu button:hover, .watch-more-menu button:focus-visible { background: var(--surface-hover); }
 .recommendation-thumbnail {
   background: transparent;
   align-self: flex-start;

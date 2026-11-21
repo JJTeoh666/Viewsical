@@ -36,6 +36,11 @@ function pageBrowseKind(page: Page): BrowseKind | null {
 }
 const activeDownloads = new Set(['queued', 'resolving', 'downloading', 'merging', 'validating']);
 
+function playlistCollection(item: MediaItem): CollectionSummary {
+  return { id: item.id, title: item.title, owner: item.channel, thumbnail: item.thumbnail, itemCount: null,
+    description: item.description, isMix: item.id.startsWith('RD'), url: item.url };
+}
+
 export default function Application() {
   const [settings, setSettings] = useState(defaultSettings);
   const [session, setSession] = useState(anonymousSession);
@@ -65,6 +70,7 @@ export default function Application() {
   const [toast, setToast] = useState('');
   const [clearConfirm, setClearConfirm] = useState(false);
   const [commentSort, setCommentSort] = useState<CommentSort>('top');
+  const [startingPlaylist, setStartingPlaylist] = useState<string>();
   const searchRef = useRef<HTMLInputElement>(null);
   const accountButton = useRef<HTMLButtonElement>(null);
   const accountMenuRef = useRef<HTMLDivElement>(null);
@@ -73,6 +79,7 @@ export default function Application() {
   const sessionRef = useRef(session);
   const pageRef = useRef(page);
   const channelNavigation = useRef(0);
+  const playlistLaunch = useRef(0);
   const sessionGenerationRef = useRef<number | null>(null);
   const refreshedHomeGeneration = useRef<number | null>(null);
   const advanceRef = useRef(-1);
@@ -266,10 +273,41 @@ export default function Application() {
     }
     window.addEventListener('keydown', searchKey); return () => window.removeEventListener('keydown', searchKey);
   }, [accountMenu, clearConfirm, downloadItem, signInOpen]);
-  function startPlaylistEntry(playlist: BrowseEntry, index: number, mode?: PlaybackMode) { const values = playlist.items.filter(item => item.kind === 'video'); const source = { key: playlist.key, query: playlist.query, collection: playlist.collection ?? page.collection ?? null }; const next = playlistQueue(crypto.randomUUID(), values, index, source, playlist.nextCursor); changeQueue(next); if (next.entries[index]) requestPlayback(next.entries[index].item, mode); }
+  function startPlaylistEntry(playlist: Pick<BrowseEntry, 'key' | 'query' | 'items' | 'collection' | 'nextCursor'>, index: number, mode?: PlaybackMode) { const values = playlist.items.filter(item => item.kind === 'video'); const source = { key: playlist.key, query: playlist.query, collection: playlist.collection ?? page.collection ?? null }; const next = playlistQueue(crypto.randomUUID(), values, index, source, playlist.nextCursor); if (!next.entries[index]) return; changeQueue(next); requestPlayback(next.entries[index].item, mode); }
   function startPlaylist(index: number, mode?: PlaybackMode) { if (entry) startPlaylistEntry(entry, index, mode); }
   function addToQueue(item: MediaItem) { changeQueue(current => { const id = current.id || crypto.randomUUID(); return { ...current, id, entries: [...current.entries, { entryId: `${id}:manual:${crypto.randomUUID()}`, sourceIndex: -1, item }] }; }); setToast('Added to queue'); }
-  function activate(item: MediaItem) { if (item.kind === 'playlist') { const collection: CollectionSummary = { id: item.id, title: item.title, owner: item.channel, thumbnail: item.thumbnail, itemCount: null, description: item.description, isMix: item.id.startsWith('RD'), url: item.url }; navigate({ kind: 'playlist', query: item.url || item.id, title: item.title, collection }); } else if (item.kind === 'channel') navigate({ kind: 'channel', query: item.id.startsWith('UC') ? item.id : item.url || item.id, title: item.title, channelThumbnail: item.thumbnail }); else play(item); }
+  function openPlaylist(item: MediaItem) {
+    navigate({ kind: 'playlist', query: item.url || item.id, title: item.title, collection: playlistCollection(item) });
+  }
+  async function playPlaylistCard(item: MediaItem) {
+    const origin = pageRef.current;
+    const generation = sessionRef.current.generation;
+    const playing = playbackRequest.current;
+    const request = ++playlistLaunch.current;
+    channelNavigation.current += 1;
+    const current = () => request === playlistLaunch.current && origin === pageRef.current
+      && generation === sessionRef.current.generation && playing === playbackRequest.current;
+    const query = item.url || item.id;
+    const key = browseKey(generation, 'playlist', query);
+    setStartingPlaylist(item.id);
+    try {
+      const first = await cache.firstPage(key, 'playlist', query);
+      if (!current()) return;
+      if (!first.items.some(video => video.kind === 'video')) throw new Error('This playlist has no playable videos.');
+      setRecommendations(undefined);
+      startPlaylistEntry({ key, query, items: first.items, nextCursor: first.nextCursor,
+        collection: first.collection ?? playlistCollection(item) }, 0);
+    } catch (error) {
+      if (current()) showError(error);
+    } finally {
+      if (request === playlistLaunch.current) setStartingPlaylist(undefined);
+    }
+  }
+  function activate(item: MediaItem) {
+    if (item.kind === 'playlist') openPlaylist(item);
+    else if (item.kind === 'channel') navigate({ kind: 'channel', query: item.id.startsWith('UC') ? item.id : item.url || item.id, title: item.title, channelThumbnail: item.thumbnail });
+    else play(item);
+  }
   function submitSearch(event: FormEvent) { event.preventDefault(); const query = searchInput.trim(); if (!query) { searchRef.current?.focus(); return; } if (!isDesktop) { showError(new Error('Search is available in the Viewsical desktop app.')); return; } try { const url = new URL(query); if (/^(www\.|m\.|music\.)?youtube\.com$|^youtu\.be$/.test(url.hostname) && url.searchParams.get('list')) { navigate({ kind: 'playlist', query }); return; } } catch { /* Free text is a regular search. */ } navigate({ kind: 'search', query }); }
   function refreshPage() { if (activeKey && activeKind && canBrowse) void cache.refresh(activeKey, activeKind, page.query ?? '').catch(() => {}); }
   function refreshSubscriptionLibrary() {
@@ -281,19 +319,19 @@ export default function Application() {
     }
   }
   async function openVideoChannel(item: MediaItem, avatar?: string | null) {
+    playlistLaunch.current += 1;
+    setStartingPlaylist(undefined);
     const request = ++channelNavigation.current;
     const generation = sessionRef.current.generation;
     const origin = pageRef.current;
     const playingId = playerRef.current.video?.id;
+    const current = () => request === channelNavigation.current && generation === sessionRef.current.generation
+      && origin === pageRef.current && (origin.kind !== 'watch' || playingId === playerRef.current.video?.id);
     try {
       const query = item.channelId || await api.videoChannel(item.id, generation);
-      if (request === channelNavigation.current && generation === sessionRef.current.generation
-        && origin === pageRef.current && playingId === playerRef.current.video?.id) {
-        navigate({ kind: 'channel', query, title: item.channel, channelThumbnail: avatar });
-      }
+      if (current()) navigate({ kind: 'channel', query, title: item.channel, channelThumbnail: avatar });
     } catch (error) {
-      if (request === channelNavigation.current && origin === pageRef.current && generation === sessionRef.current.generation
-        && playingId === playerRef.current.video?.id) showError(error);
+      if (current()) showError(error);
     }
   }
   function playlistSaved(title: string, youtube: boolean) {
@@ -335,7 +373,14 @@ export default function Application() {
       return <EmptyState title={label}>{null}</EmptyState>;
     }
     if (!items.length) return <EmptyState icon={page.kind === 'search' ? Search : ListVideo} title={page.kind === 'search' ? 'No results found' : page.kind === 'home' ? 'Find your next watch' : 'Nothing here yet'} action={page.kind === 'home' ? <button className="button secondary" onClick={() => searchRef.current?.focus()}><Search size={18} />Search YouTube</button> : undefined}>{page.kind === 'search' ? 'Try different words or paste a YouTube video link.' : page.kind === 'home' ? homeEmptyMessage : 'Refresh to check for videos, or try another collection.'}</EmptyState>;
-    return <>{entry?.error && <div className="inline-error"><AlertCircle size={18} /><span>{entry.error}</span><button className="text-link" onClick={() => void cache.loadMore(activeKey).catch(() => {})}>Retry</button></div>}{page.kind === 'playlist' && entry ? <PlaylistView entry={entry} fallback={page.collection} queue={queue} onStart={startPlaylist} onDownload={setDownloadItem} onMore={() => void cache.loadMore(activeKey).catch(() => {})} /> : <><div className={page.kind === 'search' ? 'result-list' : 'video-grid'}>{items.map(item => <VideoCard key={item.id} item={item} onActivate={activate} onDownload={setDownloadItem} onQueue={addToQueue} row={page.kind === 'search'} />)}</div>{entry?.nextCursor && <ScrollLoader key={activeKey} scope={activeKey} cursor={entry.nextCursor} loading={entry.loadingMore || entry.loading} error={entry.error} onLoad={() => void cache.loadMore(activeKey).catch(() => {})} />}</>}</>;
+    return <>{entry?.error && <div className="inline-error"><AlertCircle size={18} /><span>{entry.error}</span><button className="text-link" onClick={() => void cache.loadMore(activeKey).catch(() => {})}>Retry</button></div>}{page.kind === 'playlist' && entry ? <PlaylistView entry={entry} fallback={page.collection} queue={queue} onStart={startPlaylist} onDownload={setDownloadItem} onMore={() => void cache.loadMore(activeKey).catch(() => {})} /> : <><div className={page.kind === 'search' ? 'result-list' : 'video-grid'}>{items.map(item => {
+      const playFromCard = item.kind === 'playlist' && (activeKind === 'playlists' || activeKind === 'channel-playlists'
+        || (page.kind === 'home' && item.id.startsWith('RD')));
+      const openCreator = page.kind === 'home' && (item.kind === 'video' || (item.kind === 'playlist' && item.channelId));
+      return <VideoCard key={item.id} item={item} onActivate={playFromCard ? playPlaylistCard : activate}
+        onOpenPlaylist={playFromCard ? openPlaylist : undefined} onOpenChannel={openCreator ? openVideoChannel : undefined}
+        starting={playFromCard && startingPlaylist === item.id} onDownload={setDownloadItem} onQueue={addToQueue} row={page.kind === 'search'} />;
+    })}</div>{entry?.nextCursor && <ScrollLoader key={activeKey} scope={activeKey} cursor={entry.nextCursor} loading={entry.loadingMore || entry.loading} error={entry.error} onLoad={() => void cache.loadMore(activeKey).catch(() => {})} />}</>}</>;
   }
   return <div className={`app ${sidebar ? '' : 'sidebar-compact'} ${fullscreen ? 'player-fullscreen' : ''} ${theater ? 'theater-mode' : ''} ${player.video && mini ? docked ? 'has-bottom-player' : 'has-mini-player' : ''}`}>
     <a className="skip-link" href="#main-content">Skip to content</a>
@@ -361,10 +406,10 @@ export default function Application() {
       <div className={page.kind === 'watch' ? 'watch-layout' : 'page-layout'}><div className={page.kind === 'watch' ? 'watch-main' : 'route-body'}>
         {page.kind === 'watch' && <div className="watch-topline" key="watch-topline"><button className="back-button" onClick={() => navigate(previousPage)}><ArrowLeft size={18} />Back</button><span className="watch-source"><span className={player.status === 'playing' ? 'status-dot active' : 'status-dot'} />{player.status === 'resolving' ? 'Preparing video' : player.status === 'playing' ? 'Now playing' : player.status === 'paused' ? 'Paused' : 'Video player'}</span></div>}
         <PlayerHost key="persistent-player" player={player} mini={mini} docked={mini && docked} onDock={() => setDocked(true)} onUndock={() => setDocked(false)} fullscreen={fullscreen} theater={theater} blocked={blocked} hasPrevious={hasPrevious} hasNext={hasNext} focusSignal={focusSignal} onAction={action} onMode={changeMode} onPrevious={() => moveQueue(-1)} onNext={() => moveQueue(1)} onFullscreen={toggleFullscreen} onTheater={toggleTheater} onExpand={() => navigate({ kind: 'watch' })} onClose={closePlayer} onRetry={() => { if (player.video) requestPlayback(player.video); }} />
-        {page.kind === 'watch' ? player.video ? <><WatchInfo key={`${player.video.id}:${session.generation}:${session.status}`} video={player.video} session={session} position={player.position} resolving={player.status === 'resolving'} onOpenChannel={openVideoChannel} onSubscriptionChange={refreshSubscriptionLibrary} onSaved={playlistSaved} onDownload={setDownloadItem} /><CommentsPanel videoId={player.video.id} generation={session.generation} cache={commentCache} sort={commentSort} onSort={setCommentSort} duration={commentSeekDuration} onSeek={seekFromComment} onOpenAuthor={(query, title, thumbnail) => navigate({ kind: 'channel', query, title, channelThumbnail: thumbnail })} /></> : <EmptyState icon={Video} title="Nothing is playing yet" action={<button className="button primary" onClick={() => navigate({ kind: 'home' })}>Find a video</button>}>Search for a video or open one from your downloads.</EmptyState> : <div key="browse-content">
+        {page.kind === 'watch' ? player.video ? <><WatchInfo key={`${player.video.id}:${session.generation}:${session.status}`} video={player.video} session={session} position={player.position} resolving={player.status === 'resolving'} onOpenChannel={openVideoChannel} onSubscriptionChange={refreshSubscriptionLibrary} onSignIn={openSignIn} onSaved={playlistSaved} onDownload={setDownloadItem} /><CommentsPanel videoId={player.video.id} generation={session.generation} cache={commentCache} sort={commentSort} onSort={setCommentSort} duration={commentSeekDuration} onSeek={seekFromComment} onOpenAuthor={(query, title, thumbnail) => navigate({ kind: 'channel', query, title, channelThumbnail: thumbnail })} /></> : <EmptyState icon={Video} title="Nothing is playing yet" action={<button className="button primary" onClick={() => navigate({ kind: 'home' })}>Find a video</button>}>Search for a video or open one from your downloads.</EmptyState> : <div key="browse-content">
           {page.kind === 'channel' ? <ChannelProfile key={page.query} channel={entry?.channel ?? cachedChannel} query={page.query}
             fallbackTitle={page.title} fallbackAvatar={page.channelThumbnail} tab={page.channelTab ?? 'home'}
-            session={session} onSubscriptionChange={refreshSubscriptionLibrary}
+            session={session} onSubscriptionChange={refreshSubscriptionLibrary} onSignIn={openSignIn}
             onTab={channelTab => { if (channelTab !== (page.channelTab ?? 'home')) navigate({ ...page, channelTab }); }}
             onRefresh={refreshPage} loading={!canBrowse || loading}>
             {(!page.channelTab || page.channelTab === 'home') && items.length > 0 && <h2>Channel highlights</h2>}

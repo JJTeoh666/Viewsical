@@ -19,13 +19,14 @@ export const channelBrowseKind = {
 
 const compactCount = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
 
-export function ChannelProfile({ channel, query, fallbackTitle, fallbackAvatar, session, onSubscriptionChange, tab, onTab, onRefresh, loading, children }: {
+export function ChannelProfile({ channel, query, fallbackTitle, fallbackAvatar, session, onSubscriptionChange, onSignIn, tab, onTab, onRefresh, loading, children }: {
   channel: ChannelSummary | undefined;
   query: string | undefined;
   fallbackTitle: string | undefined;
   fallbackAvatar: string | null | undefined;
   session: SessionSnapshot;
   onSubscriptionChange: () => void;
+  onSignIn: () => void;
   tab: ChannelTab;
   onTab: (tab: ChannelTab) => void;
   onRefresh: () => void;
@@ -74,7 +75,7 @@ export function ChannelProfile({ channel, query, fallbackTitle, fallbackAvatar, 
               onClick={() => setExpanded(value => !value)}>{expanded ? 'Show less' : 'Read more'}</button>}
           </div>}
           <ChannelSubscribe key={`${channelId}:${session.generation}:${session.status}`} channelId={channelId}
-            title={title} session={session} onChanged={onSubscriptionChange} />
+            title={title} session={session} onChanged={onSubscriptionChange} onSignIn={onSignIn} />
         </div>
       </div>
     </header>

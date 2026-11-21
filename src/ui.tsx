@@ -40,12 +40,19 @@ export function Thumbnail({ item, className = '', showDuration = true }: { item:
   </span>;
 }
 
-export function VideoCard({ item, onActivate, onDownload, onQueue, row = false }: { item: MediaItem; onActivate: (item: MediaItem) => void; onDownload: (item: MediaItem) => void; onQueue: (item: MediaItem) => void; row?: boolean }) {
+export function VideoCard({ item, onActivate, onDownload, onQueue, onOpenChannel, onOpenPlaylist, starting, row = false }: {
+  item: MediaItem; onActivate: (item: MediaItem) => void; onDownload: (item: MediaItem) => void; onQueue: (item: MediaItem) => void;
+  onOpenChannel?: (item: MediaItem) => void; onOpenPlaylist?: (item: MediaItem) => void; starting?: boolean; row?: boolean;
+}) {
   return <article className={`video-card ${row ? 'video-row' : ''} ${item.kind === 'channel' ? 'channel-card' : ''}`}>
-    <button className="thumbnail-button" onClick={() => onActivate(item)} aria-label={`${item.kind === 'video' ? 'Play' : 'Open'} ${item.title}`}><Thumbnail item={item} /></button>
+    <button className="thumbnail-button" onClick={() => onActivate(item)} aria-label={`${item.kind === 'video' || onOpenPlaylist ? 'Play' : 'Open'} ${item.title}`} aria-busy={starting || undefined}><Thumbnail item={item} /></button>
     <div className="video-card-body"><div className="card-copy"><button className="video-title text-button" onClick={() => onActivate(item)} title={item.title}>{item.title}</button>
-      {item.channel && <div className="video-channel">{item.channel}</div>}
+      {item.channel && (onOpenChannel
+        ? <button type="button" className="video-channel text-button card-channel-link" title={item.channel} onClick={() => onOpenChannel(item)}>{item.channel}</button>
+        : <div className="video-channel">{item.channel}</div>)}
       <div className="video-meta">{views(item.viewCount)}{!item.viewCount && item.kind === 'channel' ? 'Channel' : ''}</div>
+      {onOpenPlaylist && <button type="button" className="video-channel text-button card-channel-link" onClick={() => onOpenPlaylist(item)}>View full playlist</button>}
+      {starting && <div className="video-meta" role="status">Starting playlist…</div>}
       {row && item.description && <p className="result-description">{item.description}</p>}
     </div>
     {item.kind === 'video' && <div className="card-actions"><IconButton label={`Add ${item.title} to queue`} onClick={() => onQueue(item)}><Plus size={18} /></IconButton><IconButton label={`Download ${item.title}`} onClick={() => onDownload(item)}><ArrowDownToLine size={18} /></IconButton></div>}

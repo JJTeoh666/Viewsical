@@ -38,6 +38,9 @@ impl YoutubeGateway {
             return Err(cancelled());
         }
         let guard = self.begin("youtube-account-action");
+        let subscription_operation = request["channelId"].as_str().map(|_| {
+            if request["subscribed"].is_null() { "read" } else { "change" }
+        });
         let operation = async {
             let cookies = self
                 .sessions
@@ -49,6 +52,9 @@ impl YoutubeGateway {
             request["cookiePath"] = json!(cookies.path());
             let response = self.call_account_helper(app, &request, unavailable).await?;
             ensure_generation(generation, self.sessions.snapshot().generation)?;
+            if let Some(operation) = subscription_operation {
+                log_subscription_diagnostics(operation, &response);
+            }
             if response["error"].as_str() == Some("sign_in_required") {
                 return Err(sign_in_required());
             }
@@ -61,7 +67,12 @@ impl YoutubeGateway {
             biased;
             _ = guard.token.cancelled() => Err(cancelled()),
             result = tokio::time::timeout(ACTION_TIMEOUT, operation) => {
-                result.unwrap_or_else(|_| Err(unavailable()))
+                result.unwrap_or_else(|_| {
+                    if let Some(operation) = subscription_operation {
+                        tracing::warn!(operation, stage = "gateway", shape = "deadline_exceeded", "YouTube subscription");
+                    }
+                    Err(unavailable())
+                })
             }
         }
     }
@@ -113,6 +124,7 @@ impl YoutubeGateway {
         generation: u64,
         channel_id: String,
         subscribed: Option<bool>,
+        video_id: Option<String>,
     ) -> AppResult<bool> {
         if !valid_channel_id(&channel_id) {
             return Err(AppError::new(
@@ -120,19 +132,51 @@ impl YoutubeGateway {
                 "Open a valid YouTube channel.",
             ));
         }
+        let video_id = video_id.filter(|id| valid_video_id(id));
+        let unavailable: fn() -> AppError = if subscribed.is_some() {
+            subscription_confirmation_pending
+        } else {
+            subscription_status_unavailable
+        };
         let response = self
             .account_action(
                 app,
                 generation,
-                json!({ "channelId": channel_id, "subscribed": subscribed }),
+                json!({ "channelId": channel_id, "subscribed": subscribed, "videoId": video_id }),
                 subscription_sign_in,
-                subscription_unavailable,
+                unavailable,
             )
             .await?;
         response["subscribed"]
             .as_bool()
             .filter(|result| subscribed.is_none_or(|expected| *result == expected))
-            .ok_or_else(subscription_unavailable)
+            .ok_or_else(|| match response["error"].as_str() {
+                Some("subscription_status_unavailable") => subscription_status_unavailable(),
+                Some("subscription_write_rejected") => AppError::new(
+                    "subscription_write_rejected",
+                    "YouTube didn't accept this subscription change.",
+                ),
+                _ => unavailable(),
+            })
+    }
+}
+
+fn log_subscription_diagnostics(operation: &str, response: &Value) {
+    let Some(entries) = response["diagnostics"].as_array() else { return };
+    for entry in entries.iter().take(8) {
+        let stage = entry["stage"].as_str().unwrap_or_default();
+        let shape = entry["shape"].as_str().unwrap_or_default();
+        if !matches!(stage, "channel" | "fallback" | "write" | "confirm" | "helper")
+            || !matches!(shape,
+                "signed_out" | "unrecognized_document" | "request_failed" | "unexpected_identity"
+                | "explicit_state" | "visible_state" | "conflicting_controls" | "ambiguous_variants"
+                | "unknown_control" | "missing_control" | "action_missing" | "rejected"
+                | "confirmed" | "unconfirmed" | "unexpected_error")
+        {
+            continue;
+        }
+        let http_status = entry["httpStatus"].as_u64().filter(|status| (100..=599).contains(status));
+        tracing::info!(operation, stage, shape, ?http_status, "YouTube subscription");
     }
 }
 
@@ -143,10 +187,17 @@ fn subscription_sign_in() -> AppError {
     )
 }
 
-fn subscription_unavailable() -> AppError {
+fn subscription_status_unavailable() -> AppError {
     AppError::new(
-        "subscription_unavailable",
-        "YouTube couldn't confirm this subscription. Try again.",
+        "subscription_status_unavailable",
+        "Couldn't check subscription status.",
+    )
+}
+
+fn subscription_confirmation_pending() -> AppError {
+    AppError::new(
+        "subscription_confirmation_pending",
+        "YouTube may have saved this change.",
     )
 }
 
@@ -156,10 +207,11 @@ pub async fn channel_subscription(
     state: tauri::State<'_, AppState>,
     channel_id: String,
     generation: u64,
+    video_id: Option<String>,
 ) -> AppResult<bool> {
     state
         .gateway
-        .subscription(&app, generation, channel_id, None)
+        .subscription(&app, generation, channel_id, None, video_id)
         .await
 }
 
@@ -170,10 +222,11 @@ pub async fn set_channel_subscription(
     channel_id: String,
     generation: u64,
     subscribed: bool,
+    video_id: Option<String>,
 ) -> AppResult<bool> {
     state
         .gateway
-        .subscription(&app, generation, channel_id, Some(subscribed))
+        .subscription(&app, generation, channel_id, Some(subscribed), video_id)
         .await
 }
 

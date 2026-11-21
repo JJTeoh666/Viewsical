@@ -3,11 +3,14 @@
 import json
 import re
 import sys
+from dataclasses import dataclass
 from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, HTTPRedirectHandler, Request, build_opener
 
 import yt_dlp
 from yt_dlp.extractor.youtube import YoutubeIE, YoutubeTabIE
+from yt_dlp.utils import ExtractorError
 from yt_dlp.utils.traversal import traverse_obj
 
 
@@ -31,7 +34,8 @@ class NoRedirects(HTTPRedirectHandler):
         return None
 
 
-def submit_action(extractor, cookie_jar, endpoint, payload, config, headers):
+def submit_action(extractor, cookie_jar, endpoint, payload, config, headers, *,
+                  timeout=6, with_status=False, limit=256 * 1024):
     # An account operation only goes to the fixed YouTube origin. Never forward
     # its Authorization header to a response-supplied redirect target.
     options = {'prettyPrint': 'false'}
@@ -44,9 +48,16 @@ def submit_action(extractor, cookie_jar, endpoint, payload, config, headers):
         'Content-Type': 'application/json',
     })
     opener = build_opener(NoRedirects(), HTTPCookieProcessor(cookie_jar))
-    with opener.open(request, timeout=6) as response:
-        data = response.read(256 * 1024 + 1)
-    return json.loads(data) if len(data) <= 256 * 1024 else None
+    with opener.open(request, timeout=timeout) as response:
+        data = response.read(limit + 1)
+        status = response.status
+    try:
+        document = json.loads(data) if len(data) <= limit else None
+    except ValueError:
+        if not with_status:
+            raise
+        document = None
+    return (document, status) if with_status else document
 
 
 def rating_controls(data):
@@ -154,119 +165,285 @@ def descendants(value, key):
             pending.extend(reversed(value))
 
 
-def subscription_state(header, channel_id):
-    for kind in ('subscribeButtonRenderer', 'subscribeButtonViewModel', 'subscribeButtonView'):
-        for button in descendants(header, kind):
-            if (not isinstance(button, dict) or button.get('channelId') != channel_id
-                    or button.get('isSignedOut') is True):
-                continue
-            for state in (button.get('subscribed'), button.get('isSubscribed'),
-                          traverse_obj(button, ('subscribeState', 'subscribed'))):
-                if isinstance(state, bool):
-                    return state
-            # The two button presentations can describe opposite states.
-            # Only treat them as current state when their values agree.
-            subscribe_state = traverse_obj(button, ('subscribeButtonContent', 'subscribeState', 'subscribed'))
-            unsubscribe_state = traverse_obj(button, ('unsubscribeButtonContent', 'subscribeState', 'subscribed'))
-            if isinstance(subscribe_state, bool) and subscribe_state is unsubscribe_state:
-                return subscribe_state
-    # The modern channel header may use a plain button or a menu trigger without
-    # repeating the channel ID. Only inspect visible, top-level header actions.
-    buttons = traverse_obj(header, (
+SIGN_IN_KEYS = (
+    'signInEndpoint', 'signInCommand', 'signInButton', 'showSignInDialogCommand', 'signInModalRenderer',
+)
+SUBSCRIPTION_VIEWS = ('subscribeButtonRenderer', 'subscribeButtonViewModel', 'subscribeButtonView')
+SUBSCRIPTION_READ_TIMEOUT = 4
+SUBSCRIPTION_WRITE_TIMEOUT = 3
+
+
+def signed_out(data):
+    return traverse_obj(data, ('responseContext', 'mainAppWebResponseContext', 'loggedOut')) is True
+
+
+def matching_control(button, channel_id):
+    if not isinstance(button, dict) or button.get('isSignedOut') is True:
+        return False
+    if button.get('channelId', channel_id) != channel_id:
+        return False
+    return all(
+        endpoint.get('channelIds') == [channel_id]
+        for key in ('subscribeEndpoint', 'unsubscribeEndpoint')
+        for endpoint in descendants(button, key)
+        if isinstance(endpoint, dict)
+    )
+
+
+def dedicated_controls(scope):
+    pending = [scope]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, list):
+            pending.extend(reversed(value))
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                if key in SUBSCRIPTION_VIEWS:
+                    yield child
+                elif key not in ('subscribeButtonContent', 'unsubscribeButtonContent'):
+                    pending.append(child)
+
+
+def read_controls(scope, visible_buttons, channel_id):
+    """Return the verified controls and their active state, if unambiguous."""
+    dedicated = [button for button in dedicated_controls(scope) if matching_control(button, channel_id)]
+    visible = [
+        button for button in visible_buttons
+        if matching_control(button, channel_id)
+        and isinstance(button.get('onTap'), dict) and button['onTap']
+        and not any(True for key in SIGN_IN_KEYS for _ in descendants(button['onTap'], key))
+        and button.get('state') not in ('BUTTON_STATE_DISABLED', 'BUTTON_STATE_HIDDEN')
+        and button.get('title') in ('Subscribe', 'Subscribed')
+    ]
+    states = set()
+    ambiguous_variants = False
+    for button in dedicated:
+        explicit = (
+            button.get('subscribed'), button.get('isSubscribed'),
+            traverse_obj(button, ('subscribeState', 'subscribed')),
+        )
+        if any(isinstance(state, bool) for state in explicit):
+            states.update(state for state in explicit if isinstance(state, bool))
+            continue
+        variants = [traverse_obj(button, (name, 'subscribeState', 'subscribed'))
+                    for name in ('subscribeButtonContent', 'unsubscribeButtonContent')]
+        # A pair with opposite values describes two presentations. It says nothing
+        # about which presentation the current session is showing.
+        if isinstance(variants[0], bool) and variants[0] is variants[1]:
+            states.add(variants[0])
+        elif all(isinstance(value, bool) for value in variants):
+            ambiguous_variants = True
+    explicit_state = bool(states)
+    states.update(button['title'] == 'Subscribed' for button in visible)
+    if len(states) == 1:
+        return dedicated + visible, states.pop(), 'explicit_state' if explicit_state else 'visible_state'
+    if states:
+        shape = 'conflicting_controls'
+    elif ambiguous_variants:
+        shape = 'ambiguous_variants'
+    else:
+        shape = 'unknown_control' if dedicated else 'missing_control'
+    return dedicated + visible, None, shape
+
+
+def channel_controls(header, channel_id):
+    visible = traverse_obj(header, (
         'pageHeaderRenderer', 'content', 'pageHeaderViewModel', 'actions',
         'flexibleActionsViewModel', 'actionsRows', ..., 'actions', ..., 'buttonViewModel', {dict},
     ))
-    def state_from_button(button, scoped):
-        if not isinstance(button, dict):
-            return None
-        title = button.get('title')
-        action = button.get('onTap')
-        if (title not in ('Subscribe', 'Subscribed') or not isinstance(action, dict)
-                or not action or button.get('isSignedOut') is True):
-            return None
-        if any(True for key in ('signInEndpoint', 'signInCommand', 'showSignInDialogCommand')
-               for _ in descendants(action, key)):
-            return None
-        endpoints = [endpoint for key in ('subscribeEndpoint', 'unsubscribeEndpoint')
-                     for endpoint in descendants(action, key) if isinstance(endpoint, dict)]
-        if endpoints and not any(endpoint.get('channelIds') == [channel_id] for endpoint in endpoints):
-            return None
-        if scoped or endpoints:
-            return title == 'Subscribed'
-        return None
+    return read_controls(header, visible, channel_id)
 
-    states = {state for button in buttons if (state := state_from_button(button, True)) is not None}
-    if states:
-        return states.pop() if len(states) == 1 else None
-    # Other header layouts need a matching channel ID on the action itself.
-    for button in descendants(header, 'buttonViewModel'):
-        if (state := state_from_button(button, False)) is not None:
-            return state
+
+def subscription_state(header, channel_id):
+    return channel_controls(header, channel_id)[1]
+
+
+def watch_controls(data, video_id, channel_id):
+    if traverse_obj(data, ('currentVideoEndpoint', 'watchEndpoint', 'videoId')) != video_id:
+        return None
+    details = traverse_obj(data, (
+        'contents', 'twoColumnWatchNextResults', 'results', 'results', 'contents', ...,
+        'videoSecondaryInfoRenderer', {dict},
+    ))
+    if len(details) != 1 or traverse_obj(details[0], (
+        'owner', 'videoOwnerRenderer', 'navigationEndpoint', 'browseEndpoint', 'browseId',
+    )) != channel_id:
+        return None
+    scopes = [
+        details[0].get('subscribeButton'),
+        traverse_obj(details[0], ('owner', 'videoOwnerRenderer', 'subscriptionButton', {dict})),
+    ]
+    visible = traverse_obj(scopes, (..., 'buttonViewModel', {dict}))
+    return read_controls(scopes, visible, channel_id)
+
+
+def subscription_payload(controls, channel_id, desired):
+    action = 'subscribe' if desired else 'unsubscribe'
+    for control in controls:
+        if control.get('disableSubscribeButton') is True or control.get('enabled') is False:
+            continue
+        for details in descendants(control, action + 'Endpoint'):
+            if isinstance(details, dict) and details.get('channelIds') == [channel_id]:
+                payload = {'channelIds': [channel_id]}
+                if isinstance(details.get('params'), str) and len(details['params']) <= 4096:
+                    payload['params'] = details['params']
+                return f'subscription/{action}', payload
     return None
 
 
-def subscription_payload(header, channel_id, desired):
-    action = 'subscribe' if desired else 'unsubscribe'
-    endpoint = f'subscription/{action}'
-    # Defaults from the YouTube.js InteractionManager when the view omits a command.
-    payload = {'channelIds': [channel_id], 'params': 'EgIIAhgA' if desired else 'CgIIAhgA'}
-    for details in descendants(header, action + 'Endpoint'):
-        if isinstance(details, dict) and details.get('channelIds') == [channel_id]:
-            if isinstance(details.get('params'), str) and len(details['params']) <= 4096:
-                payload['params'] = details['params']
-            break
-    return endpoint, payload
+@dataclass
+class SubscriptionRead:
+    source: str
+    config: dict
+    data: dict
+    url: str
+    controls: list
+    state: bool | None
 
 
-def run_subscription(channel_id, cookie_path, desired):
-    unavailable = {'error': 'subscription_unavailable'}
-    with yt_dlp.YoutubeDL({'cookiefile': cookie_path, 'socket_timeout': 6, 'logger': QuietLog()}) as downloader:
+def request_status(error):
+    cause = error.cause if isinstance(error, ExtractorError) else error
+    return next((status for status in (getattr(cause, 'status', None), getattr(cause, 'code', None))
+                 if type(status) is int and 100 <= status <= 599), None)
+
+
+def run_subscription(channel_id, cookie_path, desired, video_id, diagnostics):
+    unavailable = {'error': 'subscription_status_unavailable'}
+    reauthenticate = {'error': 'sign_in_required'}
+    rejected = {'error': 'subscription_write_rejected'}
+    unconfirmed = {'error': 'subscription_confirmation_pending'}
+    channel_url = f'https://www.youtube.com/channel/{channel_id}/featured'
+    watch_url = f'https://www.youtube.com/watch?v={video_id}'
+
+    def record(stage, shape, status=None):
+        diagnostics.append({'stage': stage, 'shape': shape, 'httpStatus': status})
+
+    with yt_dlp.YoutubeDL({
+        'cookiefile': cookie_path, 'socket_timeout': SUBSCRIPTION_READ_TIMEOUT, 'logger': QuietLog(),
+    }) as downloader:
         extractor = YoutubeTabIE(downloader)
         if not extractor.is_authenticated:
-            return {'error': 'sign_in_required'}
-        url = f'https://www.youtube.com/channel/{channel_id}/featured'
+            record('channel', 'signed_out')
+            return reauthenticate
 
-        def channel_document():
-            webpage = extractor._download_webpage(url, channel_id, query={'hl': 'en'})
-            config = extractor.extract_ytcfg(channel_id, webpage)
-            if config.get('LOGGED_IN') is not True:
-                return config, None
-            data = extractor.extract_yt_initial_data(channel_id, webpage)
-            if traverse_obj(data, ('responseContext', 'mainAppWebResponseContext', 'loggedOut')) is True:
-                return {}, None
-            returned_id = traverse_obj(data, ('metadata', 'channelMetadataRenderer', 'externalId'))
-            return config, data if returned_id == channel_id else None
+        def headers_for(read):
+            headers = extractor.generate_api_headers(
+                ytcfg=read.config, visitor_data=extractor._extract_visitor_data(read.data, read.config),
+                delegated_session_id=extractor._extract_delegated_session_id(read.config, read.data),
+                user_session_id=extractor._extract_user_session_id(read.config, read.data),
+                session_index=extractor._extract_session_index(read.config, read.data),
+            )
+            headers['Referer'] = read.url
+            return headers
 
-        config, data = channel_document()
-        if config.get('LOGGED_IN') is not True:
-            return {'error': 'sign_in_required'}
-        if not data:
+        def read_status(source, previous=None, *, stage):
+            lookup_id = video_id if source == 'watch' else channel_id
+            url = watch_url if source == 'watch' else channel_url
+            status = None
+            try:
+                if source == 'browse':
+                    config = previous.config
+                    headers = headers_for(previous)
+                    if not headers.get('Authorization'):
+                        record(stage, 'signed_out')
+                        return reauthenticate
+                    data, status = submit_action(
+                        extractor, downloader.cookiejar, 'browse', {'browseId': channel_id}, config, headers,
+                        timeout=SUBSCRIPTION_READ_TIMEOUT, with_status=True, limit=2 * 1024 * 1024,
+                    )
+                else:
+                    webpage, response = extractor._download_webpage_handle(url, lookup_id, query={'hl': 'en'})
+                    status = response.status
+                    config = extractor.extract_ytcfg(lookup_id, webpage)
+                    if config.get('LOGGED_IN') is not True:
+                        logged_out = config.get('LOGGED_IN') is False
+                        record(stage, 'signed_out' if logged_out else 'unrecognized_document', status)
+                        return reauthenticate if logged_out else unavailable
+                    data = extractor.extract_yt_initial_data(lookup_id, webpage)
+            except (OSError, ExtractorError, ValueError) as error:
+                error_status = request_status(error)
+                if error_status == 401:
+                    record(stage, 'signed_out', error_status)
+                    return reauthenticate
+                record(stage, 'unrecognized_document' if status is not None else 'request_failed', error_status or status)
+                return unavailable
+            if signed_out(data):
+                record(stage, 'signed_out', status)
+                return reauthenticate
+            if (not isinstance(data, dict) or 'error' in data
+                    or source == 'browse' and not isinstance(data.get('responseContext'), dict)):
+                record(stage, 'unrecognized_document', status)
+                return unavailable
+            if source == 'watch':
+                parsed = watch_controls(data, video_id, channel_id)
+            else:
+                returned_id = traverse_obj(data, ('metadata', 'channelMetadataRenderer', 'externalId'))
+                parsed = channel_controls(data.get('header'), channel_id) if returned_id == channel_id else None
+            if parsed is None:
+                record(stage, 'unexpected_identity', status)
+                return unavailable
+            controls, current, shape = parsed
+            record(stage, shape, status)
+            return SubscriptionRead(source, config, data, url, controls, current)
+
+        read = read_status('channel', stage='channel')
+        if not isinstance(read, SubscriptionRead):
+            return read
+        action = subscription_payload(read.controls, channel_id, desired) if desired is not None else None
+        if read.state is None or (desired is not None and read.state != desired and action is None):
+            alternate = read_status('watch' if video_id else 'browse', read, stage='fallback')
+            if alternate == reauthenticate:
+                return alternate
+            if isinstance(alternate, SubscriptionRead) and alternate.state is not None:
+                read = alternate
+                action = subscription_payload(read.controls, channel_id, desired) if desired is not None else None
+        if read.state is None:
             return unavailable
-        header = data.get('header')
-        current = subscription_state(header, channel_id)
-        if current is None:
-            return unavailable
-        if desired is None or current == desired:
-            return {'subscribed': current}
-        endpoint, payload = subscription_payload(header, channel_id, desired)
-        headers = extractor.generate_api_headers(ytcfg=config, visitor_data=extractor._extract_visitor_data(data, config))
+        if desired is None or read.state == desired:
+            return {'subscribed': read.state}
+        if action is None:
+            record('write', 'action_missing')
+            return rejected
+        headers = headers_for(read)
         if not headers.get('Authorization'):
-            return {'error': 'sign_in_required'}
-        headers['Referer'] = url
-        response = submit_action(extractor, downloader.cookiejar, endpoint, payload, config, headers)
-        if not isinstance(response, dict) or 'error' in response or 'responseContext' not in response:
-            return unavailable
-        if traverse_obj(response, ('responseContext', 'mainAppWebResponseContext', 'loggedOut')) is True:
-            return {'error': 'sign_in_required'}
-        for update in descendants(response, 'updateSubscribeButtonAction'):
-            if isinstance(update, dict) and update.get('channelId') == channel_id and update.get('subscribed') is desired:
+            record('write', 'signed_out')
+            return reauthenticate
+        try:
+            endpoint, payload = action
+            response, status = submit_action(
+                extractor, downloader.cookiejar, endpoint, payload, read.config, headers,
+                timeout=SUBSCRIPTION_WRITE_TIMEOUT, with_status=True,
+            )
+        except (OSError, ValueError) as error:
+            response, status = None, request_status(error)
+        if status == 401 or signed_out(response):
+            record('write', 'signed_out', status)
+            return reauthenticate
+        error_status = traverse_obj(response, ('error', 'code', {int}))
+        if error_status == 401:
+            record('write', 'signed_out', status)
+            return reauthenticate
+        if any(code is not None and 400 <= code < 500 and code not in (408, 409)
+               for code in (status, error_status)):
+            record('write', 'rejected', status)
+            return rejected
+        if isinstance(response, dict) and isinstance(response.get('responseContext'), dict):
+            states = {
+                update['subscribed'] for update in descendants(response, 'updateSubscribeButtonAction')
+                if isinstance(update, dict) and update.get('channelId') == channel_id
+                and isinstance(update.get('subscribed'), bool)
+            }
+            if states == {desired}:
+                record('write', 'confirmed', status)
                 return {'subscribed': desired}
-        config, data = channel_document()
-        if config.get('LOGGED_IN') is not True:
-            return {'error': 'sign_in_required'}
-        if data and subscription_state(data.get('header'), channel_id) is desired:
+        record('write', 'unconfirmed', status)
+        confirmation = read_status(read.source, read, stage='confirm')
+        if isinstance(confirmation, SubscriptionRead) and confirmation.state is desired:
             return {'subscribed': desired}
-        return unavailable
+        if confirmation == reauthenticate:
+            return confirmation
+        record('confirm', 'unconfirmed')
+        return unconfirmed
 
 
 def playlist_options(response):
@@ -344,17 +521,21 @@ def run_playlist(video_id, cookie_path, playlist_id):
 
 if __name__ == '__main__':
     request = {}
+    diagnostics = []
     failure = 'rating_unavailable'
     try:
         request = json.load(sys.stdin)
         path = request['cookiePath']
         if 'channelId' in request:
-            failure = 'subscription_unavailable'
             channel = request['channelId']
             desired = request.get('subscribed')
-            if not re.fullmatch(r'UC[A-Za-z0-9_-]{22}', channel) or (desired is not None and not isinstance(desired, bool)):
+            video = request.get('videoId')
+            failure = 'subscription_status_unavailable' if desired is None else 'subscription_confirmation_pending'
+            if (not re.fullmatch(r'UC[A-Za-z0-9_-]{22}', channel)
+                    or (desired is not None and not isinstance(desired, bool))
+                    or (video is not None and not re.fullmatch(r'[A-Za-z0-9_-]{11}', video))):
                 raise ValueError('Invalid subscription request')
-            result = run_subscription(channel, path, desired)
+            result = run_subscription(channel, path, desired, video, diagnostics)
         elif 'playlistId' in request:
             failure = 'playlist_save_unavailable'
             video = request['videoId']
@@ -371,4 +552,8 @@ if __name__ == '__main__':
             result = run(video, path, desired)
     except Exception:
         result = {'error': failure}
+        if 'channelId' in request:
+            diagnostics.append({'stage': 'helper', 'shape': 'unexpected_error', 'httpStatus': None})
+    if diagnostics:
+        result['diagnostics'] = diagnostics
     print(json.dumps(result))

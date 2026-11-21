@@ -6,7 +6,7 @@ import { COMMENT_LIMIT, CommentCache, commentKey } from './commentCache';
 import { commentTimestamps } from './commentTimestamps';
 import { errorMessage } from './format';
 import { IconButton } from './ui';
-import type { CommentSort, VideoComment } from './types';
+import type { CommentPage, CommentSort, VideoComment } from './types';
 import './comments-sort.css';
 
 const commentSortOptions = [
@@ -65,10 +65,83 @@ function CommentText({ text, duration, onSeek }: { text: string; duration: numbe
   return <>{content}{text.slice(start)}</>;
 }
 
-function CommentRow({ comment, generation, duration, onSeek, onOpenAuthor }: {
-  comment: VideoComment; generation: number; duration: number; onSeek: (seconds: number) => void;
+type CommentRowContext = {
+  generation: number; duration: number; onSeek: (seconds: number) => void;
   onOpenAuthor: (channelId: string, name: string, thumbnail: string | null) => void;
+};
+
+function CommentReplies({ comment, videoId, sort, context }: {
+  comment: VideoComment; videoId: string; sort: CommentSort; context: CommentRowContext;
 }) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const [page, setPage] = useState<CommentPage>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<{ message: string; cursor: string | null }>();
+  const request = useRef<string | null>(null);
+
+  useEffect(() => () => {
+    if (request.current) void api.cancelComments(request.current).catch(() => {});
+    request.current = null;
+  }, []);
+
+  async function load(cursor: string | null) {
+    if (request.current) return;
+    const requestId = crypto.randomUUID();
+    request.current = requestId;
+    setLoading(true);
+    setError(undefined);
+    try {
+      const result = await api.commentReplies(videoId, comment.id, cursor, sort, requestId);
+      if (request.current !== requestId) return;
+      if (result.videoId !== videoId || result.parentId !== comment.id || result.sort !== sort) {
+        throw new Error('These replies changed. Try again.');
+      }
+      const previous = cursor ? page?.items ?? [] : [];
+      const ids = new Set(previous.map(item => item.id));
+      const items = [...previous];
+      for (const item of result.items) {
+        if (ids.has(item.id)) continue;
+        ids.add(item.id);
+        items.push(item);
+      }
+      setPage({ ...result, items });
+    } catch (failure) {
+      if (request.current === requestId) {
+        const changed = (failure as { code?: string } | null)?.code === 'comments_changed';
+        setError({ message: errorMessage(failure), cursor: changed ? null : cursor });
+      }
+    } finally {
+      if (request.current === requestId) {
+        request.current = null;
+        setLoading(false);
+      }
+    }
+  }
+
+  const count = comment.replyCount;
+  const label = count ? `${count.toLocaleString()} ${count === 1 ? 'reply' : 'replies'}` : 'Show replies';
+  return <div className="comment-thread">
+    <button type="button" className="comment-replies-toggle" aria-expanded={open} aria-controls={id} onClick={() => {
+      setOpen(!open);
+      if (!open && !page && !error) void load(null);
+    }}><ChevronDown size={16} aria-hidden="true" />{open ? 'Hide replies' : label}</button>
+    <div id={id} className="comment-replies" hidden={!open}>
+      {open && page?.items.map(reply => <CommentRow key={reply.id} comment={reply} {...context} />)}
+      {loading && <p className="comment-replies-status" role="status">Loading replies…</p>}
+      {error && <div className="comment-replies-status" role="alert">{error.message} <button className="text-link" onClick={() => void load(error.cursor)}>Retry</button></div>}
+      {!loading && !error && page?.items.length === 0 && <p className="comment-replies-status">No replies to show.</p>}
+      {!error && page?.nextCursor && !page.limited && <button type="button" className="text-link comment-more-replies"
+        disabled={loading} onClick={() => void load(page.nextCursor)}>More replies</button>}
+      {page?.limited && <p className="comment-replies-status">Showing the first {COMMENT_LIMIT} replies.</p>}
+    </div>
+  </div>;
+}
+
+function CommentRow({ comment, replyScope, ...context }: CommentRowContext & {
+  comment: VideoComment; replyScope?: { videoId: string; sort: CommentSort };
+}) {
+  const { generation, duration, onSeek, onOpenAuthor } = context;
   const [expanded, setExpanded] = useState(false);
   const [translation, setTranslation] = useState<CommentTranslation | null>(null);
   const request = useRef(0);
@@ -119,7 +192,8 @@ function CommentRow({ comment, generation, duration, onSeek, onOpenAuthor }: {
           </button>}
       </div>
       {result?.status === 'error' && <p className="comment-translation-error" role="alert">{result.message}</p>}
-      {(comment.likeCount != null || comment.replyCount != null) && <div className="comment-counts">{comment.likeCount != null && <span aria-label={`${comment.likeCount.toLocaleString()} likes`}><ThumbsUp size={14} />{comment.likeCount.toLocaleString()}</span>}{comment.replyCount != null && comment.replyCount > 0 && <span>{comment.replyCount.toLocaleString()} {comment.replyCount === 1 ? 'reply' : 'replies'}</span>}</div>}
+      {comment.likeCount != null && <div className="comment-counts"><span aria-label={`${comment.likeCount.toLocaleString()} likes`}><ThumbsUp size={14} />{comment.likeCount.toLocaleString()}</span></div>}
+      {replyScope && (comment.hasReplies || (comment.replyCount ?? 0) > 0) && <CommentReplies comment={comment} context={context} {...replyScope} />}
     </div>
   </article>;
 }
@@ -143,7 +217,8 @@ export function CommentsPanel({ videoId, generation, cache, sort, onSort, durati
     <p className="comments-readonly">Comments from YouTube. Viewing only.</p>
     {initial ? <div className="comments-loading" role="status"><LoaderCircle size={18} className="spin" />Loading comments…</div> : entry?.disabled ? <div className="comments-empty"><MessageSquareOff size={23} /><p>Comments are turned off for this video.</p></div> : <>
       {entry?.error && <div className="comments-error" role="alert"><AlertCircle size={18} /><p>{entry.error}</p><button className="button secondary small" onClick={() => void (entry.errorCode === 'comments_changed' ? cache.refresh(key, videoId, sort) : cache.retry(key))}>{entry.errorCode === 'comments_changed' ? 'Refresh comments' : 'Retry'}</button></div>}
-      {!!entry?.items.length && <div className="comment-list" key={`${videoId}:${generation}`}>{entry.items.map(comment => <CommentRow key={comment.id} comment={comment} generation={generation} duration={duration} onSeek={onSeek} onOpenAuthor={onOpenAuthor} />)}</div>}
+      {!!entry?.items.length && <div className="comment-list" key={key}>{entry.items.map(comment => <CommentRow key={comment.id}
+        comment={comment} generation={generation} duration={duration} onSeek={onSeek} onOpenAuthor={onOpenAuthor} replyScope={{ videoId, sort }} />)}</div>}
       {!entry?.items.length && !entry?.error && <div className="comments-empty"><MessageSquare size={23} /><p>No comments to show.</p></div>}
       {entry?.nextCursor && !entry.limited && <div className="comments-load-more"><button className="button secondary" disabled={entry.loadingMore} onClick={() => void cache.loadMore(key)}>{entry.loadingMore ? <LoaderCircle size={17} className="spin" /> : <ChevronDown size={17} />}{entry.loadingMore ? 'Loading…' : 'Load more comments'}</button></div>}
       {entry?.limited && <p className="comments-limit">Showing the first {COMMENT_LIMIT} comments for this sort order.</p>}

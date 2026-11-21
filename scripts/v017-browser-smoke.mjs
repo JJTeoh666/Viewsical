@@ -165,7 +165,9 @@ async function testWatchActions(page, check) {
   await row.getByRole('button', { name: 'Subscribed', exact: true }).waitFor();
   check('The watch Subscribe button acts on the video uploader', await page.evaluate(() =>
     window.__fixture.calls.some(call => call.command === 'set_channel_subscription'
-      && call.args.channelId === 'UC1234567890123456789012' && call.args.subscribed)));
+      && call.args.channelId === 'UC1234567890123456789012'
+      && call.args.videoId === window.__fixture.calls.find(action => action.command === 'play_video')?.args.item.id
+      && call.args.subscribed)));
   await download.click();
   await page.getByRole('dialog', { name: 'Download', exact: true }).waitFor();
   await page.keyboard.press('Escape');
@@ -245,6 +247,106 @@ async function testWatchActions(page, check) {
     && await dialog.getByRole('button', { name: 'New local playlist' }).isEnabled());
 }
 
+async function testWatchActionOverflow(page, check) {
+  await page.goto('http://127.0.0.1:1423/?watch-actions&long-creator');
+  await page.getByRole('button', { name: 'Play Nightfall piano session', exact: true }).click();
+  const row = page.locator('.watch-info-row');
+  const more = row.getByRole('button', { name: 'More video actions', exact: true });
+  const directSave = row.getByRole('button', { name: 'Add to playlist', exact: true });
+  const directDownload = row.getByRole('button', { name: 'Download', exact: true });
+  const menu = row.getByRole('menu', { name: 'More video actions', exact: true });
+  const save = menu.getByRole('menuitem', { name: 'Add to playlist', exact: true });
+  const download = menu.getByRole('menuitem', { name: 'Download', exact: true });
+  const title = page.getByRole('heading', { name: 'Nightfall piano session', exact: true });
+  await more.waitFor();
+  const channel = row.getByRole('button', { name: /Open Nightfall Sessions & the Midnight Orchestra/ });
+  const channelBox = await channel.boundingBox();
+  const moreBox = await more.boundingBox();
+  check('A long creator name moves only playlist and download into the overflow menu',
+    !await directSave.isVisible() && !await directDownload.isVisible()
+    && await row.getByRole('button', { name: 'Share', exact: true }).isVisible()
+    && await row.getByRole('button', { name: 'Like', exact: true }).isVisible()
+    && Math.abs(moreBox.y - channelBox.y) <= 10);
+
+  await more.focus();
+  await more.press('ArrowDown');
+  await save.waitFor();
+  await page.waitForFunction(() => document.activeElement?.textContent === 'Add to playlist');
+  await save.press('ArrowDown');
+  check('The overflow menu supports arrow navigation', await download.evaluate(item => item === document.activeElement));
+  await download.press('Escape');
+  check('Escape dismisses the overflow menu and restores focus', !await menu.isVisible()
+    && await more.evaluate(button => button === document.activeElement));
+
+  await more.click();
+  await page.locator('.video-details').screenshot({ path: path.join(output, 'viewsical-watch-action-overflow.png') });
+  await title.click();
+  check('Clicking outside the overflow menu closes it', !await menu.isVisible());
+  await more.click();
+  await save.click();
+  const playlistDialog = page.getByRole('dialog', { name: 'Add to playlist', exact: true });
+  await playlistDialog.waitFor();
+  await page.keyboard.press('Escape');
+  await playlistDialog.waitFor({ state: 'hidden' });
+  await more.click();
+  await download.click();
+  const downloadDialog = page.getByRole('dialog', { name: 'Download', exact: true });
+  await downloadDialog.waitFor();
+  await page.keyboard.press('Escape');
+  await downloadDialog.waitFor({ state: 'hidden' });
+  check('Both overflow items open their existing dialogs', !await menu.isVisible());
+
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ ...viewport, width: 2000 });
+  await directSave.waitFor();
+  check('Widening the window brings back both inline buttons', await directDownload.isVisible() && !await more.isVisible());
+  await page.locator('.video-details').screenshot({ path: path.join(output, 'viewsical-watch-action-inline.png') });
+  await page.setViewportSize(viewport);
+  await more.waitFor();
+  check('Narrowing the same window returns the optional actions to the menu', !await directSave.isVisible());
+}
+
+async function testHomeCreatorAndMix(page, check) {
+  await page.goto('http://127.0.0.1:1423/?watch-actions&home-mix');
+  const mix = page.locator('.video-card').filter({ has: page.getByRole('button', { name: 'Play Mix - Nightfall Sessions', exact: true }) });
+  const kit = page.locator('.video-card').filter({ has: page.getByRole('button', { name: 'Play Nightfall piano session', exact: true }) });
+  const creator = kit.getByRole('button', { name: 'Nightfall Sessions', exact: true });
+  const started = () => page.evaluate(() => window.__fixture.calls.filter(call => call.command === 'play_video'));
+  await creator.waitFor();
+  await creator.hover();
+  const cards = await mix.boundingBox();
+  const videoCard = await kit.boundingBox();
+  await page.screenshot({ path: path.join(output, 'viewsical-home-creator-mix.png'), clip: {
+    x: Math.floor(cards.x - 12), y: Math.floor(cards.y - 66), width: Math.ceil(videoCard.x + videoCard.width - cards.x + 24),
+    height: Math.ceil(cards.height + 85),
+  } });
+  await creator.click();
+  await page.getByRole('region', { name: 'Nightfall Sessions', exact: true }).waitFor();
+  check('The creator name opens its profile from Home without starting playback', (await started()).length === 0);
+  const back = page.locator('.topbar').getByRole('button', { name: 'Go back', exact: true });
+  await back.click();
+  await mix.getByRole('button', { name: 'View full playlist', exact: true }).click();
+  await page.getByRole('heading', { name: 'Mix - Nightfall Sessions', exact: true }).waitFor();
+  check('View full playlist opens the mix without starting playback', (await started()).length === 0);
+  await back.click();
+  await mix.getByRole('button', { name: 'Play Mix - Nightfall Sessions', exact: true }).click();
+  await page.locator('.video-details h1').getByText('Fixture video 01', { exact: true }).waitFor();
+  check('The Home mix starts with the playlist’s first video and keeps the queue',
+    (await started()).length === 1 && (await started())[0].args.item.id === 'fixture-1'
+    && await page.locator('.queue-item').count() >= 2);
+  await page.locator('.sidebar').getByRole('button', { name: 'Playlists', exact: true }).click();
+  const playlist = page.locator('.video-card').filter({ has: page.getByRole('button', { name: 'Play Evening listening', exact: true }) });
+  await playlist.getByRole('button', { name: 'View full playlist', exact: true }).hover();
+  const playlistCard = await playlist.boundingBox();
+  await page.screenshot({ path: path.join(output, 'viewsical-playlists-card-actions.png'), clip: {
+    x: Math.floor(playlistCard.x - 12), y: Math.floor(playlistCard.y - 66),
+    width: Math.ceil(playlistCard.width + 24), height: Math.ceil(playlistCard.height + 85),
+  } });
+  await playlist.getByRole('button', { name: 'Play Evening listening', exact: true }).click();
+  await page.waitForFunction(() => window.__fixture.calls.filter(call => call.command === 'play_video').length === 2);
+  check('The Playlists tab also starts playback at the first video', (await started())[1].args.item.id === 'fixture-1');
+}
+
 async function testChannelSubscription(page, check) {
   await page.goto('http://127.0.0.1:1423/');
   const sidebar = page.locator('.sidebar');
@@ -263,7 +365,8 @@ async function testChannelSubscription(page, check) {
   await subscribed.waitFor();
   const initialReads = await reads();
   check('The subscription check is scoped to the active channel and account',
-    initialReads.length === 1 && initialReads[0].args.channelId === 'UC1234567890123456789012' && initialReads[0].args.generation === 1);
+    initialReads.length === 1 && initialReads[0].args.channelId === 'UC1234567890123456789012'
+    && initialReads[0].args.generation === 1 && initialReads[0].args.videoId == null);
   const mutations = await writes();
   check('A connected viewer can subscribe to the channel', mutations.length === 1
     && mutations[0].args.channelId === 'UC1234567890123456789012'
@@ -298,6 +401,66 @@ async function testChannelSubscription(page, check) {
   check('Unsubscribing requires confirmation and returns to Subscribe', finalMutations.length === 2
     && finalMutations[1].args.channelId === mutations[0].args.channelId
     && finalMutations[1].args.subscribed === false);
+}
+
+async function testSubscriptionRecovery(page, check) {
+  await page.goto('http://127.0.0.1:1423/?watch-actions');
+  await page.evaluate(() => { window.__fixture.nextSubscriptionReadError = 'subscription_status_unavailable'; });
+  await page.getByRole('button', { name: 'Play Nightfall piano session', exact: true }).click();
+  const watch = page.locator('.watch-channel');
+  const retry = watch.getByRole('button', { name: 'Retry', exact: true });
+  const subscribe = watch.getByRole('button', { name: 'Subscribe', exact: true });
+  const subscribed = watch.getByRole('button', { name: 'Subscribed', exact: true });
+  const writes = () => page.evaluate(() => window.__fixture.calls.filter(call => call.command === 'set_channel_subscription').length);
+  await retry.waitFor();
+  check('An unreadable status offers Retry without permitting a subscription change',
+    await subscribe.isDisabled() && await writes() === 0);
+  await retry.click();
+  await page.evaluate(() => { window.__fixture.nextSubscriptionWriteError = 'subscription_write_rejected'; });
+  await subscribe.click();
+  await watch.getByText("YouTube didn't accept this subscription change.").waitFor();
+  check('A rejected change keeps the previously confirmed state', await subscribe.isEnabled() && await writes() === 1);
+
+  await page.evaluate(() => { window.__fixture.nextSubscriptionWriteError = 'subscription_confirmation_pending'; });
+  await subscribe.click();
+  const checkStatus = watch.getByRole('button', { name: 'Check status', exact: true });
+  await checkStatus.waitFor();
+  check('An uncertain change blocks another write until status is checked', await subscribe.isDisabled());
+  await page.locator('.watch-info-row').screenshot({ path: path.join(output, 'viewsical-subscription-recovery.png') });
+  await checkStatus.click();
+  await subscribed.waitFor();
+  check('Checking status reflects the change without resubmitting it', await writes() === 2);
+  await page.locator('.watch-info-row').screenshot({ path: path.join(output, 'viewsical-subscription-confirmed.png') });
+
+  await page.evaluate(() => { window.__fixture.nextSubscriptionReadError = 'sign_in_required'; });
+  await watch.getByRole('button', { name: 'Open Nightfall Sessions channel' }).click();
+  const profile = page.getByRole('region', { name: 'Nightfall Sessions', exact: true });
+  const signIn = profile.getByRole('button', { name: 'Sign in', exact: true });
+  await signIn.click();
+  await page.getByRole('dialog', { name: 'Sign in to YouTube', exact: true }).waitFor();
+  check('An expired subscription session opens the existing sign-in flow',
+    await page.evaluate(() => window.__fixture.calls.some(call => call.command === 'open_sign_in')) && await writes() === 2);
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => window.__fixture.switchSubscriptionAccount(false));
+  const reopenProfile = async () => {
+    await page.getByRole('button', { name: 'Play Nightfall piano session', exact: true }).click();
+    await watch.getByRole('button', { name: 'Open Nightfall Sessions channel' }).click();
+  };
+  await reopenProfile();
+  const profileSubscribe = profile.getByRole('button', { name: 'Subscribe', exact: true });
+  await page.evaluate(() => { window.__fixture.deferSubscriptionWrite = true; });
+  await profileSubscribe.click();
+  await page.waitForFunction(() => Boolean(window.__fixture.finishSubscriptionWrite));
+  await page.evaluate(() => window.__fixture.switchSubscriptionAccount(false));
+  await reopenProfile();
+  await page.waitForFunction(() => window.__fixture.calls.some(call => call.command === 'channel_subscription' && call.args.generation === 3 && call.args.videoId == null));
+  await page.waitForFunction(() => !document.querySelector('.channel-profile .channel-subscribe')?.disabled);
+  await page.evaluate(async () => {
+    window.__fixture.finishSubscriptionWrite();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  check('A late change from another account leaves the current account state alone',
+    await profileSubscribe.isEnabled() && await profile.getByRole('button', { name: 'Subscribed', exact: true }).count() === 0);
 }
 
 async function testSeekThumb(page, check) {
@@ -530,6 +693,8 @@ try {
     });
     const playlist = { id: 'PLfixture', kind: 'playlist', title: 'Evening listening', channel: 'Fixture listener', thumbnail: art, url: 'https://www.youtube.com/playlist?list=PLfixture', duration: null, viewCount: null, description: 'A quiet collection for the end of the day.' };
     const collection = { id: 'PLfixture', title: playlist.title, owner: playlist.channel, thumbnail: art, itemCount: 120, description: playlist.description, isMix: false, url: playlist.url };
+    const mix = { ...playlist, id: 'RDfixture', title: 'Mix - Nightfall Sessions', channel: '', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDfixture' };
+    const mixCollection = { ...collection, id: mix.id, title: mix.title, owner: mix.channel, isMix: true, url: mix.url };
     const banner = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="230" viewBox="0 0 1200 230"><defs><linearGradient id="sky" x2="1" y2="1"><stop stop-color="#101223"/><stop offset=".7" stop-color="#293861"/><stop offset="1" stop-color="#74688e"/></linearGradient><radialGradient id="glow"><stop stop-color="#ffe1b8" stop-opacity=".5"/><stop offset="1" stop-color="#ffe1b8" stop-opacity="0"/></radialGradient></defs><path fill="url(#sky)" d="M0 0h1200v230H0z"/><circle cx="935" cy="87" r="125" fill="url(#glow)"/><circle cx="935" cy="87" r="42" fill="#f6d6b1"/><path fill="#3f5073" d="M0 159 130 84l120 56L365 43l177 100 104-50 146 78 153-50 255 63v46H0z"/><path fill="#243250" d="M0 204 180 148l125 40L479 90l120 74 143-44 122 60 144-34 192 56v28H0z"/><path fill="#161e37" d="m0 226 208-32 120 24 122-48 178 38 222-34 157 37 193-25v44H0z"/></svg>')}`;
     const avatar = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><defs><linearGradient id="sky" x2="1" y2="1"><stop stop-color="#66568c"/><stop offset="1" stop-color="#192338"/></linearGradient></defs><path fill="url(#sky)" d="M0 0h256v256H0z"/><circle cx="157" cy="82" r="50" fill="#f6d6b1"/><circle cx="178" cy="63" r="46" fill="#41436f"/><path fill="#374066" d="m0 196 86-80 83 83 43-28 44 29v56H0z"/><path fill="#212a44" d="m0 223 72-42 45 36 66-54 73 41v52H0z"/></svg>')}`;
     const channelProfile = {
@@ -562,6 +727,8 @@ try {
     const restore = new URLSearchParams(location.search).get('restore-session');
     const anonymous = new URLSearchParams(location.search).has('anonymous');
     const watchActionsFixture = new URLSearchParams(location.search).has('watch-actions');
+    const longCreator = new URLSearchParams(location.search).has('long-creator');
+    const homeMix = new URLSearchParams(location.search).has('home-mix');
     const session = { generation: 1, status: anonymous ? 'anonymous' : restore === null ? 'connected' : 'restoring', label: !anonymous && restore === null ? 'Fixture listener' : null, message: null };
     const settings = { theme: 'system', downloadDirectory: 'C:\\Fixture downloads', defaultQuality: 1080, volume: 80, muted: false, playbackRate: 1, alwaysAudioOnly: false, rememberPlaybackMode: false };
     let player = { status: 'idle', video: null, position: 0, duration: 0, volume: 80, muted: false, speed: 1, quality: 1080, requestedQuality: 1080, qualities: [1080, 720, 480], error: null, errorCode: null, bufferedSeconds: 30, loadId: 0, playbackMode: 'video' };
@@ -571,6 +738,11 @@ try {
     state.setPlaybackPosition = position => { player = { ...player, position }; state.emit('player-state', player); };
     state.restoreSession = () => {
       Object.assign(session, { status: 'connected', label: 'Fixture listener' });
+      state.emit('session-changed', { ...session });
+    };
+    state.switchSubscriptionAccount = subscribed => {
+      channelSubscribed = subscribed;
+      Object.assign(session, { generation: session.generation + 1, status: 'connected', label: 'Another fixture listener' });
       state.emit('session-changed', { ...session });
     };
     window.__fixture = state; state.cache = cacheData; state.session = session;
@@ -593,7 +765,25 @@ try {
           if (session.status !== 'connected' || args.channelId !== channelProfile.id || args.generation !== session.generation) {
             throw { message: 'Connect your YouTube account to manage subscriptions.' };
           }
-          if (command === 'set_channel_subscription') channelSubscribed = args.subscribed;
+          if (command === 'channel_subscription') {
+            const code = state.nextSubscriptionReadError;
+            state.nextSubscriptionReadError = undefined;
+            if (code === 'subscription_status_unavailable') throw { code, message: "Couldn't check subscription status." };
+            if (code === 'sign_in_required') throw { code, message: 'Sign in to YouTube to manage channel subscriptions.' };
+          } else {
+            const code = state.nextSubscriptionWriteError;
+            state.nextSubscriptionWriteError = undefined;
+            if (code === 'subscription_write_rejected') throw { code, message: "YouTube didn't accept this subscription change." };
+            if (state.deferSubscriptionWrite) {
+              state.deferSubscriptionWrite = false;
+              await new Promise(resolve => { state.finishSubscriptionWrite = resolve; });
+              return args.subscribed;
+            }
+            channelSubscribed = args.subscribed;
+            if (code === 'subscription_confirmation_pending') {
+              throw { code, message: 'YouTube may have saved this change.' };
+            }
+          }
           return channelSubscribed;
         }
         if (command === 'local_playlists') return [...(savedLocalPlaylist ? [localCollection] : []), ...(createdPlaylist ? [createdPlaylist] : [])];
@@ -616,7 +806,9 @@ try {
         if (command === 'remove_local_playlist') { savedLocalPlaylist = false; return; }
         if (command === 'watch_details') return {
           uploadDate: '2026-11-18', viewCount: 49200, likeCount: 1200, rating: anonymous ? null : 'none',
-          ...(watchActionsFixture && { channelId: channelProfile.id, channelName: channelProfile.title, channelAvatar: avatar, subscriberCount: 24800 }),
+          ...(watchActionsFixture && { channelId: channelProfile.id, channelName: longCreator
+            ? 'Nightfall Sessions & the Midnight Orchestra with Coastline Chamber Players'
+            : channelProfile.title, channelAvatar: avatar, subscriberCount: 24800 }),
           description: 'A late-night arrangement for piano and strings. Listen for the melody returning in the second half, then follow the quiet transition into the coda.\n\nThanks for listening.',
         };
         if (command === 'rate_video') {
@@ -640,7 +832,7 @@ try {
               const tracks = ['Blue hour improvisation', 'A room full of echoes', 'Studio session in D minor', 'After the last train', 'Winter light', 'Quiet arrangements', 'Notes from the coast'];
               return { ...sessionVideo(index, tracks[index - 2]), channel: ['Blue Hour Music', 'Quiet Keys', 'Luna Studio'][(index - 2) % 3] };
             });
-            return { items: [...(offset === 0 ? [playlist] : []), ...videos], nextCursor: offset < 48 ? String(offset+24) : null };
+            return { items: [...(offset === 0 ? [homeMix ? mix : playlist] : []), ...videos], nextCursor: offset < 48 ? String(offset+24) : null };
           }
           if (channelItems[args.kind] && args.query === channelProfile.id) {
             const items = state.noLiveStreams && args.kind === 'channel-live' ? [] : channelItems[args.kind];
@@ -650,7 +842,7 @@ try {
             return { items: [{ ...video(15), title: 'Other creator update' }, ...(channelSubscribed ? channelItems['channel-home'].slice(0, 1) : [])], nextCursor: null };
           }
           if (args.kind === 'playlists') return { items: [playlist], nextCursor: null };
-          if (args.kind === 'playlist') { const offset = Number(args.cursor ?? 0); if (state.failNextPlaylist && offset > 0) { state.failNextPlaylist = false; throw {message: 'Fixture network interruption'}; } return { items: Array.from({ length: 24 }, (_, i) => video(i+offset+1)), nextCursor: offset < 96 ? String(offset+24) : null, collection }; }
+          if (args.kind === 'playlist') { const offset = Number(args.cursor ?? 0); if (state.failNextPlaylist && offset > 0) { state.failNextPlaylist = false; throw {message: 'Fixture network interruption'}; } return { items: Array.from({ length: 24 }, (_, i) => video(i+offset+1)), nextCursor: offset < 96 ? String(offset+24) : null, collection: args.query === mix.url ? mixCollection : collection }; }
           if (args.kind === 'search' && args.query === playlist.title) {
             const piano = { ...video(121), title: 'Soft piano for late nights', channel: 'Quiet Keys' };
             const jazz = { ...video(122), title: 'Late-night instrumental jazz', channel: 'Blue Hour Music' };
@@ -669,6 +861,12 @@ try {
         }
         if (command === 'video_comments') {
           await new Promise(resolve => setTimeout(resolve,30));
+          if (args.parentId) return { videoId: args.videoId, parentId: args.parentId, sort: args.sort, disabled: false,
+            totalCount: null, nextCursor: args.cursor ? null : 'replies-next', items: [{
+              id: args.cursor ? 'reply-2' : 'reply-1', author: args.cursor ? 'Evening listener' : 'Coastline listener',
+              authorChannelId: channelProfile.id, authorThumbnail: avatar, text: args.cursor ? 'The strings are a lovely touch.' : 'I love that piano section too.',
+              likeCount: 3, replyCount: null, published: '1 day ago', authorIsUploader: false, isPinned: false,
+            }] };
           if (args.videoId === 'fixture-5') return { videoId: args.videoId, items: [], nextCursor: null, totalCount: null, disabled: true, sort: args.sort, limited: false };
           const start = args.cursor ? 20 : 0; const count = args.sort === 'newest' ? 2 : args.cursor ? 3 : 20;
           return { videoId: args.videoId, items: Array.from({ length: count },(_,index) => ({ id: `${args.videoId}-${args.sort}-${start+index}`, author: args.sort === 'newest' ? `Newest viewer ${index+1}` : `Viewer ${start+index+1}`, authorChannelId: start+index===1 ? 'UC1234567890123456789012' : null, authorThumbnail: start+index===1 ? art : null, text: start+index===0 ? 'Literal <script>window.__commentInjected=true</script> stays plain text. '+('A thoughtful comment about this video. '.repeat(15)) : start+index===1 ? '1:21 est mon passage préféré. La mélodie continue de me surprendre.' : `A comment on this video, number ${start+index+1}.`, likeCount: index*3, replyCount: index===1?2:null, published: '2 days ago', authorIsUploader: index===1, isPinned: index===0 && args.sort==='top' })), nextCursor: args.sort==='top'&&!args.cursor?'comments-next':null, totalCount:23, disabled:false, sort:args.sort, limited:false };
@@ -740,7 +938,7 @@ try {
   check('Search submit is a separate 46px circular accessible button',circle.w===46&&circle.h===46&&circle.radius==='50%');
   await page.getByRole('button',{name:'Back to top',exact:true}).waitFor();await page.getByRole('button',{name:'Back to top',exact:true}).click();await page.waitForFunction(()=>scrollY<2);
   check('Home back-to-top returns to the heading without reloading pages',await page.locator('.video-card').count()===72&&(await calls('home')).length===3&&await page.getByRole('heading',{name:'Home',exact:true}).evaluate(el=>document.activeElement===el));
-  await page.getByRole('button',{name:'Playlists',exact:true}).click();await page.getByRole('button',{name:'Open Evening listening',exact:true}).click();
+  await page.getByRole('button',{name:'Playlists',exact:true}).click();await page.getByRole('button',{name:'View full playlist',exact:true}).click();
   await page.getByRole('heading',{name:'Evening listening',exact:true}).waitFor();await page.waitForTimeout(160);
   check('Playlist initially displays only 24 items',await page.locator('.playlist-row').count()===24&&(await calls('playlist')).length===1);
   await page.locator('.playlist-videos .scroll-loader').scrollIntoViewIfNeeded();await waitCount('playlist',2);await page.waitForFunction(()=>document.querySelectorAll('.playlist-row').length===48);await page.waitForTimeout(160);
@@ -750,6 +948,23 @@ try {
   await page.getByRole('button',{name:'Play Fixture video 03 from this playlist',exact:true}).click();await page.getByRole('region',{name:'Comments',exact:true}).waitFor();await page.waitForTimeout(180);
   check('Playing a playlist does not drain remaining pages',await page.locator('.queue-item').count()===48&&(await calls('playlist')).length===2);
   const translatedComment = page.locator('.comment-row').filter({ hasText: 'est mon passage préféré' });
+  const replies = translatedComment.locator('.comment-replies');
+  const replyToggle = translatedComment.getByRole('button', { name: '2 replies', exact: true });
+  await replyToggle.waitFor();
+  check('Comment authors use the normal text color and replies load on demand',
+    await translatedComment.locator('.comment-author-link').evaluate(el => getComputedStyle(el).color === getComputedStyle(el.closest('.comment-row')).color)
+    && await page.evaluate(() => !window.__fixture.calls.some(call => call.command === 'video_comments' && call.args.parentId)));
+  await replyToggle.click();
+  await replies.getByText('I love that piano section too.').waitFor();
+  await replies.getByRole('button', { name: 'More replies', exact: true }).click();
+  await replies.getByText('The strings are a lovely touch.').waitFor();
+  check('Show replies loads and paginates the selected comment thread', await replies.locator('.comment-row').count() === 2
+    && await page.evaluate(() => window.__fixture.calls.filter(call => call.command === 'video_comments' && call.args.parentId)
+      .every(call => call.args.parentId === 'duplicate-id-top-1')));
+  await page.mouse.move(0, 0);
+  await translatedComment.screenshot({ path: path.join(output, 'viewsical-comment-replies.png') });
+  await translatedComment.getByRole('button', { name: 'Hide replies', exact: true }).click();
+  check('Hiding replies collapses the thread', !await replies.isVisible());
   await translatedComment.getByRole('button', { name: 'Translate to English' }).click();
   const translatedText = page.getByText('is my favorite part. The melody still surprises me.');
   await translatedText.waitFor();
@@ -985,7 +1200,7 @@ try {
   check('Live shows stream entries from its own tab',
     await channelTab('Live').getAttribute('aria-selected') === 'true' && (await calls('channel-live')).length === 1);
   await channelTab('Playlists').click();
-  const channelPlaylist = page.getByRole('button', { name: 'Open Evening listening', exact: true });
+  const channelPlaylist = page.getByRole('button', { name: 'View full playlist', exact: true });
   await channelPlaylist.waitFor();
   check('Playlists shows collections from the channel', await channelTab('Playlists').getAttribute('aria-selected') === 'true'
     && (await calls('channel-playlists')).length === 1);
@@ -1022,6 +1237,9 @@ try {
   await page.goto('http://127.0.0.1:1423/?anonymous');
   await testLocalPlaylists(page, check);
   await testWatchActions(page, check);
+  await testWatchActionOverflow(page, check);
+  await testHomeCreatorAndMix(page, check);
+  await testSubscriptionRecovery(page, check);
   await scaledOverlayChecks(browser,output,check);
   check('No browser errors',errors.length===0,errors);
 } catch(error) {

@@ -50,6 +50,7 @@ impl YoutubeGateway {
         video_id: &str,
         sort: &str,
         limit: usize,
+        parent_id: Option<&str>,
         request_id: &str,
     ) -> AppResult<Value> {
         if !valid_video_id(video_id)
@@ -64,8 +65,12 @@ impl YoutubeGateway {
         let generation = self.sessions.snapshot().generation;
         let request = self.begin(&format!("comments:{request_id}"));
         let order = if sort == "newest" { "new" } else { "top" };
+        let comment_args = match parent_id {
+            Some(parent) => format!("viewsical_reply_parent={parent};max_comments={total},300,{limit},{limit},2", total = 300 + limit),
+            None => format!("max_comments={limit},{limit},0,0,1"),
+        };
         let args = vec!["--write-comments".into(), "--ignore-no-formats-error".into(), "--no-playlist".into(),
-            "--extractor-args".into(), format!("youtube:skip=hls,dash;player_skip=js;comment_sort={order};max_comments={limit},{limit},0,0,1")];
+            "--extractor-args".into(), format!("youtube:skip=hls,dash;player_skip=js;comment_sort={order};{comment_args}")];
         let target = canonical_video(video_id);
         let anonymous = self
             .run(

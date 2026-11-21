@@ -40,9 +40,10 @@ export const api = {
   watchDetails: (videoId: string, generation: number) => call<WatchDetails>('watch_details', { videoId, generation }),
   videoChannel: (videoId: string, generation: number) => call<string>('video_channel', { videoId, generation }),
   rateVideo: (videoId: string, generation: number, rating: VideoRating) => call<void>('rate_video', { videoId, generation, rating }),
-  channelSubscription: (channelId: string, generation: number) => call<boolean>('channel_subscription', { channelId, generation }),
-  setChannelSubscription: (channelId: string, generation: number, subscribed: boolean) =>
-    call<boolean>('set_channel_subscription', { channelId, generation, subscribed }),
+  channelSubscription: (channelId: string, generation: number, videoId?: string) =>
+    call<boolean>('channel_subscription', { channelId, generation, videoId }),
+  setChannelSubscription: (channelId: string, generation: number, subscribed: boolean, videoId?: string) =>
+    call<boolean>('set_channel_subscription', { channelId, generation, subscribed, videoId }),
   signOut: () => call<void>('sign_out'),
   playVideo: (item: MediaItem, quality: number, playbackMode?: PlaybackMode) => call<void>('play_video', { item, quality, playbackMode: playbackMode ?? null }),
   setPlaybackMode: (mode: PlaybackMode) => call<void>('set_playback_mode', { mode }),
@@ -73,6 +74,8 @@ export const api = {
   cacheConfigure: (enabled: boolean, maxBytes: number) => call<MediaCacheSummary>('cache_configure', { enabled, maxBytes }),
   cacheClear: (kind: MediaCacheKind, entryId?: string) => call<MediaCacheSummary>('cache_clear', { kind, entryId: entryId ?? null }),
   comments: (videoId: string, cursor: string | null, sort: CommentSort, requestId: string) => call<CommentPage>('video_comments', { videoId, cursor, sort, requestId }),
+  commentReplies: (videoId: string, parentId: string, cursor: string | null, sort: CommentSort, requestId: string) =>
+    call<CommentPage>('video_comments', { videoId, parentId, cursor, sort, requestId }),
   cancelComments: (requestId: string) => call<void>('cancel_comments', { requestId }),
   translateComment: (generation: number, text: string) => call<string>('translate_comment', { generation, text }),
   revealDownload: (taskId: string) => call<void>('reveal_download', { taskId }),
