@@ -1,7 +1,10 @@
 use super::{
     browse::{browse_target, decode_cursor, encode_cursor},
     identity::playlist_target,
-    playback::{cdn_url, playback_from_json, source_expiry, source_fresh, source_selector},
+    playback::{
+        cdn_url, playback_from_json, source_expiry, source_fresh, source_selector,
+        video_candidates_from_json, video_inventory_from_json, SourceCache, SourceKey,
+    },
 };
 use super::{canonical_video, classify_error, ensure_generation, media_item, normalize_video_ref};
 use crate::models::MediaItem;
@@ -51,6 +54,84 @@ fn playback_heatmap_preserves_valid_normalized_replay_segments() {
         .unwrap()
         .heatmap
         .is_none());
+}
+
+#[test]
+fn timeline_extracts_chapters_and_keeps_storyboard_urls_out_of_saved_media() {
+    let response = json!({
+        "id":"dQw4w9WgXcQ", "duration":39, "url":"https://rr.googlevideo.com/a?expire=500",
+        "vcodec":"none", "acodec":"opus", "protocol":"https",
+        "chapters":[
+            {"start_time":14.5, "end_time":45, "title":" Main section "},
+            {"start_time":0, "end_time":18, "title":"Intro"},
+            {"start_time":39, "end_time":40, "title":"Past the end"},
+            {"start_time":8, "end_time":11, "title":" "}
+        ],
+        "formats":[{
+            "protocol":"mhtml", "width":160, "height":90, "rows":2, "columns":2,
+            "fps":8.0/39.0, "viewsical_frame_interval":5.0,
+            "url":"https://i.ytimg.com/sb/dQw4w9WgXcQ/storyboard3_L2/M$M.jpg?sigh=fixture",
+            "fragments":[
+                {"url":"https://i.ytimg.com/sb/dQw4w9WgXcQ/storyboard3_L2/M0.jpg?sigh=fixture"},
+                {"url":"https://i.ytimg.com/sb/dQw4w9WgXcQ/storyboard3_L2/M1.jpg?sigh=fixture"}
+            ]
+        }]
+    });
+    let plan = playback_from_json(&response, 1).unwrap();
+    let board = plan.storyboard.unwrap();
+    assert_eq!((board.frame_count, board.frame_duration), (8, 5.0));
+    assert!(board.url_template.contains("M$M.jpg"));
+    let saved = serde_json::to_value(&plan.video).unwrap();
+    assert!(!saved.to_string().contains("sigh"));
+    assert_eq!(
+        saved["chapters"],
+        json!([
+            {"startTime":0.0, "endTime":14.5, "title":"Intro"},
+            {"startTime":14.5, "endTime":39.0, "title":"Main section"}
+        ])
+    );
+    assert_eq!(
+        serde_json::from_value::<MediaItem>(saved).unwrap().chapters,
+        plan.video.chapters
+    );
+    let legacy = serde_json::to_value(media_item(&json!({"id":"dQw4w9WgXcQ"})).unwrap()).unwrap();
+    assert!(serde_json::from_value::<MediaItem>(legacy)
+        .unwrap()
+        .chapters
+        .is_none());
+
+    for (field, bad_value) in [
+        (
+            "url",
+            json!("https://i.ytimg.com.other.test/sb/dQw4w9WgXcQ/M$M.jpg"),
+        ),
+        ("rows", json!(0)),
+        ("fps", json!(500)),
+        (
+            "fragments",
+            json!([{"url":"https://i.ytimg.com/sb/dQw4w9WgXcQ/M0.jpg"}]),
+        ),
+    ] {
+        let mut invalid = response.clone();
+        invalid["formats"][0][field] = bad_value;
+        assert!(
+            playback_from_json(&invalid, 1)
+                .unwrap()
+                .storyboard
+                .is_none(),
+            "{field}"
+        );
+    }
+    let mut without_interval = response;
+    without_interval["formats"][0]["viewsical_frame_interval"] = json!(null);
+    assert_eq!(
+        playback_from_json(&without_interval, 1)
+            .unwrap()
+            .storyboard
+            .unwrap()
+            .frame_duration,
+        39.0 / 8.0
+    );
 }
 
 #[test]
@@ -109,6 +190,14 @@ fn canonicalizes_library_targets() {
         browse_target("channel", "@rustlang", 25).unwrap(),
         "https://www.youtube.com/@rustlang/videos"
     );
+    for (kind, tab) in [("channel-home", "featured"), ("channel-live", "streams"), ("channel-playlists", "playlists")] {
+        assert_eq!(
+            browse_target(kind, "https://www.youtube.com/@rustlang/videos?si=tracking", 25).unwrap(),
+            format!("https://www.youtube.com/@rustlang/{tab}")
+        );
+    }
+    assert!(browse_target("channel-live", "https://attacker.test/@rustlang", 25).is_err());
+    assert_eq!(classify_error("This channel does not have a streams tab").code, "channel_tab_missing");
     assert!(browse_target("playlist", "https://attacker.test/?list=PLabc", 25).is_err());
     assert_eq!(
         browse_target("search", "--execute evil", 25).unwrap(),
@@ -159,6 +248,16 @@ fn source_cache_requires_all_expiries_and_skew() {
     assert_eq!(
         source_expiry(
             [
+                "https://manifest.googlevideo.com/api/manifest/hls_playlist/expire/350/video?expire=400",
+                "https://rr.googlevideo.com/a?expire=500",
+            ]
+            .into_iter()
+        ),
+        Some(350)
+    );
+    assert_eq!(
+        source_expiry(
+            [
                 "https://rr.googlevideo.com/v?expire=500",
                 "https://rr.googlevideo.com/a"
             ]
@@ -171,10 +270,12 @@ fn source_cache_requires_all_expiries_and_skew() {
     assert!(!source_fresh(None, 0));
 }
 #[test]
-fn direct_first_and_audio_selection_do_not_require_video_in_audio_mode() {
-    assert!(source_selector("video", 1080, false).starts_with("bv[protocol=https][height<=1080]"));
-    assert!(source_selector("video", 720, true).starts_with("bv[protocol^=m3u8]"));
-    assert!(source_selector("video", 720, true).contains("+ba[protocol^=m3u8]"));
+fn video_requests_both_transports_and_audio_keeps_its_own_selector() {
+    assert_eq!(
+        source_selector("video", 1080, false),
+        "bv[protocol^=m3u8][height<=1080]+ba[protocol^=m3u8],b[protocol^=m3u8][height<=1080],\
+         bv[protocol=https][height<=1080]+ba[protocol=https],b[protocol=https][height<=1080]"
+    );
     assert!(source_selector("audio", 720, true).starts_with("ba[protocol^=m3u8]"));
     assert_eq!(
         source_selector("audio", 1080, false),
@@ -184,6 +285,157 @@ fn direct_first_and_audio_selection_do_not_require_video_in_audio_mode() {
     assert_eq!(plan.selected_quality, 0);
     assert!(plan.audio_url.is_none());
 }
+
+fn candidate_fixture() -> serde_json::Value {
+    json!({
+        "id":"fzQ6gRAEoy0", "title":"Candidate fixture", "format_id":"18",
+        "url":"https://rr.googlevideo.com/direct?expire=550",
+        "http_headers":{"User-Agent":"root-selected-direct"},
+        "formats":[
+            {"format_id":"617", "url":"https://manifest.googlevideo.com/expire/500/video",
+                "protocol":"m3u8_native", "vcodec":"vp9", "acodec":"none", "height":1080,
+                "http_headers":{"User-Agent":"hls", "Cookie":"secret"}},
+            {"format_id":"234", "url":"https://manifest.googlevideo.com/expire/450/audio",
+                "protocol":"m3u8_native", "vcodec":"none", "http_headers":{"user-agent":"hls"}},
+            {"format_id":"18", "url":"https://rr.googlevideo.com/direct?expire=550",
+                "protocol":"https", "vcodec":"avc1", "acodec":"aac", "height":1080,
+                "http_headers":{"User-Agent":"direct"}},
+            {"format_id":"hls-mux", "url":"https://manifest.googlevideo.com/expire/510/muxed",
+                "protocol":"m3u8_native", "vcodec":"avc1", "acodec":"aac", "height":720}
+        ],
+        "requested_downloads":[
+            {"requested_formats":[{"format_id":"617"},{"format_id":"234"}]},
+            {"format_id":"hls-mux"},
+            {"format_id":"18"}
+        ]
+    })
+}
+
+#[test]
+fn simulated_video_selections_keep_exact_tracks_and_prefer_hls_at_equal_height() {
+    let response = candidate_fixture();
+    let plans = video_candidates_from_json(&response, 7, 1080, 0).unwrap();
+    assert_eq!(plans.len(), 2);
+    assert_eq!(plans[0].selected_quality, 1080);
+    assert_eq!(plans[0].format_id, "617+234");
+    assert_eq!(plans[0].protocol, "m3u8_native");
+    assert_eq!(plans[0].expires_at, Some(450));
+    assert_eq!(plans[0].headers, vec![("User-Agent".into(), "hls".into())]);
+    assert_eq!(
+        plans[0].audio_headers,
+        vec![("user-agent".into(), "hls".into())]
+    );
+    assert_eq!(plans[1].protocol, "https");
+    assert!(plans[1].audio_url.is_none());
+    assert_eq!(
+        plans[1].headers,
+        vec![("User-Agent".into(), "direct".into())]
+    );
+}
+
+#[test]
+fn video_quality_precedes_transport_and_unsafe_pairs_are_skipped() {
+    let mut response = candidate_fixture();
+    response["formats"][0]["height"] = json!(720);
+    let plans = video_candidates_from_json(&response, 7, 1080, 0).unwrap();
+    assert_eq!(
+        (plans[0].selected_quality, plans[0].protocol.as_str()),
+        (1080, "https")
+    );
+    let plans = video_candidates_from_json(&response, 7, 720, 0).unwrap();
+    assert_eq!(
+        (plans[0].selected_quality, plans[0].protocol.as_str()),
+        (720, "m3u8_native")
+    );
+    assert_eq!(plans.len(), 1);
+
+    response["formats"][1]["http_headers"] = json!({"User-Agent":"different audio context"});
+    let plans = video_candidates_from_json(&response, 7, 1080, 0).unwrap();
+    assert_eq!(plans[1].format_id, "hls-mux");
+    response["formats"][3]["url"] = json!("https://invalid.test/expire/900");
+    let plans = video_candidates_from_json(&response, 7, 1080, 0).unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].protocol, "https");
+}
+
+#[test]
+fn expired_selections_never_outrank_a_fresh_candidate() {
+    let mut response = candidate_fixture();
+    let plans = video_candidates_from_json(&response, 7, 1080, 460).unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].protocol, "https");
+    assert_eq!(
+        video_candidates_from_json(&response, 7, 720, 460)
+            .unwrap_err()
+            .code,
+        "source_expired"
+    );
+    assert_eq!(
+        video_candidates_from_json(&response, 7, 1080, 490)
+            .unwrap_err()
+            .code,
+        "source_expired"
+    );
+
+    response["formats"][2]["url"] = json!("https://rr.googlevideo.com/direct");
+    let plans = video_candidates_from_json(&response, 7, 1080, 490).unwrap();
+    assert_eq!(plans[0].protocol, "https");
+    assert!(!plans[0].is_reusable());
+}
+
+#[test]
+fn one_quality_inventory_supplies_both_caps_in_the_same_session_and_mode() {
+    let mut response = candidate_fixture();
+    response["requested_downloads"]
+        .as_array_mut()
+        .unwrap()
+        .remove(1);
+    let key = SourceKey::background("fzQ6gRAEoy0", 7, "video");
+    let (inventory, _) = video_inventory_from_json(&response, 7, 0).unwrap();
+    let mut cache = SourceCache::default();
+    cache.insert(key.clone(), inventory, 0, true);
+
+    for height in [1080, 720, 1080] {
+        let selection = cache.lookup(&key, height, true, 0).unwrap();
+        assert_eq!(selection.primary.selected_quality, height);
+        assert_eq!(selection.primary.qualities, vec![1080, 720]);
+    }
+    assert!(cache.lookup(&key, 900, true, 0).is_none());
+    assert_eq!(
+        cache
+            .lookup(&key, 900, false, 0)
+            .unwrap()
+            .primary
+            .selected_quality,
+        720
+    );
+    // The 720p URL is within the expiry margin but 1080p direct is still usable.
+    assert!(cache.lookup(&key, 720, true, 450).is_none());
+    assert_eq!(
+        cache
+            .lookup(&key, 1080, true, 450)
+            .unwrap()
+            .primary
+            .protocol,
+        "https"
+    );
+    for other in [
+        SourceKey::background("fzQ6gRAEoy0", 8, "video"),
+        SourceKey::background("fzQ6gRAEoy0", 7, "audio"),
+    ] {
+        assert!(cache.lookup(&other, 1080, false, 0).is_none());
+    }
+}
+
+#[test]
+fn unknown_audio_expiry_does_not_make_expired_video_usable() {
+    let mut response = candidate_fixture();
+    response["formats"][1]["url"] = json!("https://manifest.googlevideo.com/audio");
+    let plans = video_candidates_from_json(&response, 7, 1080, 440).unwrap();
+    assert_eq!(plans[0].format_id, "18");
+    assert!(plans.iter().all(|plan| plan.format_id != "617+234"));
+}
+
 #[test]
 fn prefix_like_video_ids_and_short_mix_links_keep_correct_identity() {
     for id in ["RD123456789", "PL123456789"] {

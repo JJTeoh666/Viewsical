@@ -1,9 +1,10 @@
-import type { BrowseKind, BrowsePage, CollectionSummary, MediaItem } from './types';
+import type { BrowseKind, BrowsePage, ChannelSummary, CollectionSummary, MediaItem } from './types';
 import { errorMessage, uniqueItems } from './format';
 
 export interface BrowseEntry {
   key: string; kind: BrowseKind; query: string; items: MediaItem[]; nextCursor: string | null;
   collection: CollectionSummary | null; attempted: boolean; loaded: boolean;
+  channel?: ChannelSummary;
   loading: boolean; loadingMore: boolean; error: string | null; scrollY: number;
 }
 type Fetcher = (kind: BrowseKind, query: string, cursor: string | null, requestId: string) => Promise<BrowsePage>;
@@ -37,6 +38,13 @@ export class BrowseCache {
     await this.fetchPage(key, null);
   }
   saveScroll(key: string, scrollY: number) { const record = this.records.get(key); if (record && record.entry.scrollY !== scrollY) this.publish(record, { scrollY }); }
+  invalidate(key: string) {
+    const record = this.records.get(key);
+    if (!record) return;
+    this.records.delete(key);
+    record.jobs.forEach(job => this.cancel(job.id));
+    this.listeners.forEach(listener => listener());
+  }
   clear() { this.records.forEach(record => { record.revision += 1; record.jobs.forEach(job => this.cancel(job.id)); }); this.records.clear(); this.listeners.forEach(listener => listener()); }
   async loadMore(key: string): Promise<BrowsePage | null> {
     const record = this.records.get(key);
@@ -59,7 +67,7 @@ export class BrowseCache {
       const collection = page.collection ?? record.entry.collection;
       let items = cursor === null ? mergeBrowseItems(record.entry.kind, [], page.items) : mergeBrowseItems(record.entry.kind, record.entry.items, page.items);
       if (collection?.isMix && items.length > 96) { items = items.slice(-96); while (record.pages.size > 4) record.pages.delete(record.pages.keys().next().value!); }
-      this.publish(record, { items, nextCursor: page.nextCursor, collection, loaded: true, loading: false, loadingMore: false, error: null });
+      this.publish(record, { items, nextCursor: page.nextCursor, collection, channel: page.channel ?? record.entry.channel, loaded: true, loading: false, loadingMore: false, error: null });
       return page;
     }).catch(error => {
       if (this.records.get(key) === record && record.revision === revision) this.publish(record, { loading: false, loadingMore: false, error: errorMessage(error) });

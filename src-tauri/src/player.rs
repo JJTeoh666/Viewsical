@@ -1,10 +1,11 @@
 use crate::{
+    display_awake::DisplayAwake,
     downloads::{hide_command, valid_video_id, ProcessJob},
     media_cache::{cacheable_duration, CacheLease},
     models::*,
     runtime::ToolPaths,
     store::Store,
-    youtube::PlaybackPlan,
+    youtube::{PlaybackPlan, PlaybackSelection, PrefetchLookup},
     video_surface, AppState,
 };
 use serde_json::{json, Value};
@@ -25,7 +26,7 @@ use tokio::{
     process::{Child, Command},
     sync::{oneshot, Mutex as AsyncMutex},
 };
-use tokio_util::sync::CancellationToken;
+mod subtitles;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,7 +42,7 @@ pub struct QueuePrefetch {
 struct PrefetchAttempt {
     target: QueuePrefetch,
     load_id: u64,
-    cancel: CancellationToken,
+    lookup: Option<PrefetchLookup>,
     started: bool,
 }
 
@@ -134,6 +135,29 @@ struct SourceToken {
     load: u64,
     attempt: u64,
 }
+
+#[derive(Default)]
+struct StartupClock {
+    previous: Option<f64>,
+    moving: bool,
+    started: bool,
+}
+
+impl StartupClock {
+    fn advanced(&mut self, position: f64) -> bool {
+        if self.started {
+            return false;
+        }
+        let moving = self
+            .previous
+            .replace(position)
+            .is_some_and(|prior| position > prior);
+        self.started = self.moving && moving;
+        self.moving = moving;
+        self.started
+    }
+}
+
 #[derive(Default)]
 struct EntryTracker {
     map: HashMap<i64, SourceToken>,
@@ -142,6 +166,11 @@ struct EntryTracker {
     early: VecDeque<(Option<i64>, Value)>,
 }
 impl EntryTracker {
+    fn reset(&mut self) {
+        // mpv playlist entry IDs are unique only within one engine instance.
+        *self = Self::default();
+    }
+
     fn begin(&mut self, token: SourceToken) {
         self.pending = Some(token);
         self.early.clear();
@@ -200,15 +229,66 @@ impl MediaFailure {
             Self::Unknown => "media_open",
         }
     }
+
+    fn error(self) -> AppError {
+        let message = match self {
+            Self::Decoder => "This source could not be decoded. Try another quality or video.",
+            Self::Rejected => "YouTube rejected the media source. Retry the video or reconnect your session.",
+            Self::Network => "The media connection failed. Check your connection, then retry.",
+            Self::Premature => "The source ended before the video was complete. Retry to get a fresh source.",
+            Self::AudioMissing => "The video's audio source could not be opened. Retry or choose another quality.",
+            _ => "This source could not be played. Retry or choose another quality.",
+        };
+        AppError::new(self.code(), message)
+    }
 }
-#[derive(Clone)]
+
 struct Recovery {
+    load: u64,
     item: MediaItem,
     quality: u32,
     mode: String,
     generation: u64,
-    attempted: bool,
-    prefer_hls: bool,
+    active: Option<(SourceToken, PlaybackPlan)>,
+    alternate: Option<PlaybackPlan>,
+    retrying: Option<SourceToken>,
+    refreshed: bool,
+}
+
+enum SourceRetry {
+    Alternate(PlaybackPlan),
+    Refresh,
+}
+
+impl Recovery {
+    fn new(options: &LoadOptions, item: MediaItem, quality: u32) -> Self {
+        Self {
+            load: options.load,
+            item,
+            quality,
+            mode: options.mode.clone(),
+            generation: options.generation,
+            active: None,
+            alternate: None,
+            retrying: None,
+            refreshed: false,
+        }
+    }
+
+    fn next_retry(&mut self, is_usable: impl FnOnce(&PlaybackPlan) -> bool) -> Option<SourceRetry> {
+        if let Some(plan) = self.alternate.take().filter(is_usable) {
+            return Some(SourceRetry::Alternate(plan));
+        }
+        self.begin_refresh().then_some(SourceRetry::Refresh)
+    }
+
+    fn begin_refresh(&mut self) -> bool {
+        if self.refreshed {
+            return false;
+        }
+        self.refreshed = true;
+        true
+    }
 }
 #[derive(Clone)]
 struct LoadOptions {
@@ -216,8 +296,10 @@ struct LoadOptions {
     generation: u64,
     fresh_preferences: bool,
     mode: String,
+    exact_quality: bool,
     force_refresh: bool,
     prefer_hls: bool,
+    prefetch: Option<PrefetchLookup>,
 }
 
 #[derive(Clone)]
@@ -267,6 +349,7 @@ pub struct PlayerManager {
     tools: Arc<ToolPaths>,
     store: Arc<Store>,
     state: Mutex<PlayerState>,
+    display_awake: DisplayAwake,
     ui: Mutex<PlayerUiContext>,
     writer: AsyncMutex<Option<Arc<AsyncMutex<PipeWriter>>>>,
     process: AsyncMutex<Option<Child>>,
@@ -274,6 +357,8 @@ pub struct PlayerManager {
     starting: AsyncMutex<()>,
     switching: AsyncMutex<()>,
     control_updates: AsyncMutex<()>,
+    subtitle_selection: AsyncMutex<()>,
+    current_subtitle: AsyncMutex<Option<subtitles::SelectedSubtitle>>,
     presentation_revision: Mutex<u64>,
     surface: Mutex<Option<isize>>,
     serial: AtomicU64,
@@ -281,6 +366,7 @@ pub struct PlayerManager {
     attempt: AtomicU64,
     engine_epoch: AtomicU64,
     replies: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
+    media_events: Mutex<StartupClock>,
     entries: Mutex<EntryTracker>,
     recovery: Mutex<Option<Recovery>>,
     local_path: Mutex<Option<LocalSource>>,
@@ -309,7 +395,11 @@ impl PlayerManager {
             state.speed = settings.playback_rate;
             state.quality = settings.default_quality;
             state.requested_quality = settings.default_quality;
-            if settings.always_audio_only {
+            if settings.remember_playback_mode {
+                let mode = store.preferred_playback_mode().ok().flatten().unwrap_or("video");
+                state.playback_mode = mode.into();
+                state.preferred_playback_mode = Some(mode.into());
+            } else if settings.always_audio_only {
                 state.playback_mode = "audio".into();
             }
         }
@@ -317,6 +407,7 @@ impl PlayerManager {
             tools,
             store,
             state: Mutex::new(state),
+            display_awake: DisplayAwake::default(),
             ui: Mutex::new(PlayerUiContext::default()),
             writer: AsyncMutex::new(None),
             process: AsyncMutex::new(None),
@@ -324,6 +415,8 @@ impl PlayerManager {
             starting: AsyncMutex::new(()),
             switching: AsyncMutex::new(()),
             control_updates: AsyncMutex::new(()),
+            subtitle_selection: AsyncMutex::new(()),
+            current_subtitle: AsyncMutex::new(None),
             presentation_revision: Mutex::new(0),
             surface: Mutex::new(None),
             serial: AtomicU64::new(1),
@@ -331,6 +424,7 @@ impl PlayerManager {
             attempt: AtomicU64::new(0),
             engine_epoch: AtomicU64::new(0),
             replies: Mutex::new(HashMap::new()),
+            media_events: Mutex::default(),
             entries: Mutex::new(EntryTracker::default()),
             recovery: Mutex::new(None),
             local_path: Mutex::new(None),
@@ -355,12 +449,23 @@ impl PlayerManager {
         self.state.lock().map(|s| s.clone()).unwrap_or_default()
     }
     fn publish(&self, app: &AppHandle) {
+        self.update_display_awake();
         let _ = app.emit_to("main", "player-state", self.snapshot());
         self.publish_presentation(app);
         let visible = self.video_visible();
         let canvas = video_surface::is_canvas(app);
         video_surface::source_changed(app, self.snapshot().load_id, visible);
         crate::overlay::set_video_visible(app, visible && !canvas);
+    }
+    fn update_display_awake(&self) {
+        // Serialize with playback state changes so a late notification cannot
+        // reacquire the request after pause, a mode switch, or shutdown.
+        let state = self.state.lock().unwrap_or_else(|lock| lock.into_inner());
+        self.display_awake.update(
+            &state,
+            self.desired_pause.load(Ordering::SeqCst),
+            self.closing.load(Ordering::SeqCst),
+        );
     }
     fn publish_progress(&self, app: &AppHandle) {
         let state = self.snapshot();
@@ -412,8 +517,11 @@ impl PlayerManager {
         self.publish(app);
     }
     fn fail(self: &Arc<Self>, app: &AppHandle, error: &AppError) {
+        self.fail_attempt(app, self.token(), error);
+    }
+    fn fail_attempt(self: &Arc<Self>, app: &AppHandle, token: SourceToken, error: &AppError) {
         if let Ok(mut s) = self.state.lock() {
-            if s.status == "ended" {
+            if self.token() != token || s.load_id != token.load || s.status == "ended" {
                 return;
             }
             s.status = "failed".into();
@@ -422,9 +530,8 @@ impl PlayerManager {
         }
         self.cancel_background(app);
         self.publish(app);
-        tracing::warn!(load_id=self.load.load(Ordering::SeqCst),category=%error.code,"Playback operation failed");
+        tracing::warn!(load_id=token.load,category=%error.code,"Playback operation failed");
         let manager = self.clone();
-        let token = self.token();
         tauri::async_runtime::spawn(async move {
             let _switch = manager.switching.lock().await;
             if manager.token() != token || manager.snapshot().status != "failed" {
@@ -463,6 +570,23 @@ impl PlayerManager {
         }
         Ok(())
     }
+
+    fn begin_recovery(&self, options: &LoadOptions, item: Option<MediaItem>, quality: u32) {
+        if let Ok(mut recovery) = self.recovery.lock() {
+            if self.load.load(Ordering::SeqCst) == options.load {
+                *recovery = item.map(|item| Recovery::new(options, item, quality));
+            }
+        }
+    }
+
+    fn refresh_expired_sources(&self, options: &LoadOptions) -> bool {
+        self.recovery.lock().is_ok_and(|mut recovery| {
+            recovery.as_mut()
+                .filter(|context| context.load == options.load)
+                .is_some_and(Recovery::begin_refresh)
+        })
+    }
+
     pub async fn play(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -477,25 +601,22 @@ impl PlayerManager {
                 "Choose a YouTube video to play.",
             ));
         }
-        let requested_mode =
-            validated_mode(mode.as_deref().unwrap_or(&self.snapshot().playback_mode))?.to_string();
-        let mode = if self.store.settings()?.always_audio_only {
-            "audio".into()
-        } else {
-            requested_mode
-        };
-        app.state::<AppState>().gateway.cancel("playback-source");
-        self.cancel_background(app);
+        let mode = self.playback_mode_for_item(mode.as_deref())?;
+        let state_ref = app.state::<AppState>();
+        let generation = state_ref.sessions.snapshot().generation;
+        let prefetch = self.handoff_prefetch(app, &item, generation, &mode);
+        state_ref.gateway.cancel_playback_requests();
         self.save_history();
         let load = self.load.fetch_add(1, Ordering::SeqCst) + 1;
-        let generation = app.state::<AppState>().sessions.snapshot().generation;
         let options = LoadOptions {
             load,
             generation,
             fresh_preferences: true,
             mode: mode.clone(),
+            exact_quality: false,
             force_refresh: false,
             prefer_hls: false,
+            prefetch,
         };
         self.source_generation.store(generation, Ordering::SeqCst);
         self.desired_pause.store(false, Ordering::SeqCst);
@@ -508,9 +629,13 @@ impl PlayerManager {
             if self.writer.lock().await.is_some() {
                 let _ = self.send(json!(["stop"])).await;
             }
+            self.check_load(app, &options)?;
+            self.clear_subtitle(false).await;
             self.change(app, |s| {
                 s.status = "resolving".into();
                 s.video = Some(item.clone());
+                s.storyboard = None;
+                s.subtitle_track_id = None;
                 s.position = 0.;
                 s.duration = item.duration.unwrap_or(0.);
                 s.qualities.clear();
@@ -522,16 +647,7 @@ impl PlayerManager {
                 s.buffered_seconds = 0.;
             });
         }
-        if let Ok(mut context) = self.recovery.lock() {
-            *context = Some(Recovery {
-                item: item.clone(),
-                quality,
-                mode,
-                generation,
-                attempted: false,
-                prefer_hls: false,
-            });
-        }
+        self.begin_recovery(&options, Some(item.clone()), quality);
         let result = self.open_remote(app, &item, quality, 0., options).await;
         if let Err(ref error) = result {
             if self.load.load(Ordering::SeqCst) == load && error.code != "cancelled" {
@@ -546,7 +662,7 @@ impl PlayerManager {
         item: &MediaItem,
         quality: u32,
         start: f64,
-        options: LoadOptions,
+        mut options: LoadOptions,
     ) -> AppResult<()> {
         self.check_load(app, &options)?;
         let cached = self
@@ -559,14 +675,17 @@ impl PlayerManager {
                     && d.video.id == item.id
                     && (options.mode == "audio" || d.mode == "video")
                     && (d.mode == "audio" || d.quality <= quality)
+                    && (!options.exact_quality || d.quality == quality)
                     && d.output_path
                         .as_ref()
                         .is_some_and(|p| std::path::Path::new(p).is_file())
             })
             .max_by_key(|d| (d.mode == options.mode, d.quality));
         if let Some(cached) = cached {
+            options.prefetch.take();
             let mut item = item.clone();
             item.heatmap = cached.video.heatmap.or(item.heatmap);
+            item.chapters = cached.video.chapters.or(item.chapters);
             let source = LocalSource {
                 path: cached.output_path.unwrap_or_default(),
                 quality: cached.quality,
@@ -587,14 +706,18 @@ impl PlayerManager {
                 state
                     .cache
                     .find(item, quality, &options.mode, options.generation, account)
+                    .filter(|cached| !options.exact_quality || cached.plan.selected_quality == quality)
             {
+                options.prefetch.take();
                 self.ensure_engine(app).await?;
                 let _switch = self.switching.lock().await;
                 self.check_load(app, &options)?;
                 if options.fresh_preferences {
                     self.apply_fresh_preferences(app).await?;
                 }
-                let result = self.load_plan(app, cached.plan, start, &options).await;
+                let mut plan = cached.plan;
+                plan.storyboard = state.gateway.cached_storyboard(&item.id, options.generation);
+                let result = self.load_plan(app, plan, start, &options).await;
                 if result.is_ok() {
                     self.install_cache_lease(Some(cached.lease));
                 }
@@ -602,31 +725,77 @@ impl PlayerManager {
             }
         }
         let started = Instant::now();
-        let plan = app
-            .state::<AppState>()
-            .gateway
-            .resolve_mode(
-                app,
-                item,
-                quality,
-                &options.mode,
-                options.force_refresh,
-                options.prefer_hls,
-            )
-            .await?;
+        let state = app.state::<AppState>();
+        let selection = PlaybackSelection {
+            generation: options.generation,
+            mode: &options.mode,
+            quality,
+            exact_quality: options.exact_quality,
+            force_refresh: options.force_refresh,
+            prefer_hls: options.prefer_hls,
+        };
+        let resolved = state.gateway
+            .resolve_candidates(app, item, selection, options.prefetch.take())
+            .await;
+        let candidates = match resolved {
+            Err(error) if error.code == "source_expired" => {
+                self.check_load(app, &options)?;
+                if !self.refresh_expired_sources(&options) {
+                    return Err(error);
+                }
+                tracing::info!(
+                    load_id = options.load,
+                    action = "refresh",
+                    category = "source_expired",
+                    "Playback source recovery selected"
+                );
+                state.gateway.resolve_candidates(app, item, PlaybackSelection {
+                    force_refresh: true, prefer_hls: false, ..selection
+                }, None).await?
+            }
+            result => result?,
+        };
         self.check_load(app, &options)?;
-        tracing::info!(load_id=options.load,video_id=%item.id,mode=%options.mode,protocol=%plan.protocol,format_id=%plan.format_id,quality=plan.selected_quality,elapsed_ms=started.elapsed().as_millis()as u64,"Playback sources resolved");
+        let plan = candidates.primary;
+        tracing::info!(
+            load_id = options.load,
+            video_id = %item.id,
+            mode = %options.mode,
+            protocol = %plan.protocol,
+            format_id = %plan.format_id,
+            quality = plan.selected_quality,
+            cache_hit = candidates.cache_hit,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Playback sources resolved"
+        );
+        self.open_online_plan(app, plan, candidates.alternate, start, &options)
+            .await
+    }
+
+    async fn open_online_plan(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        plan: PlaybackPlan,
+        alternate: Option<PlaybackPlan>,
+        start: f64,
+        options: &LoadOptions,
+    ) -> AppResult<()> {
         self.ensure_engine(app).await?;
         let _switch = self.switching.lock().await;
-        self.check_load(app, &options)?;
+        self.check_load(app, options)?;
         if options.fresh_preferences {
             self.apply_fresh_preferences(app).await?;
-            self.check_load(app, &options)?;
+            self.check_load(app, options)?;
         }
-        if let Ok(mut local) = self.local_path.lock() {
-            *local = None;
+        {
+            let mut recovery = self.recovery.lock().map_err(AppError::io)?;
+            if let Some(context) = recovery.as_mut().filter(|context| context.load == options.load) {
+                // Recovery allows a candidate from the first extraction, then at
+                // most one fresh lookup and open.
+                context.alternate = alternate.filter(|_| !context.refreshed);
+            }
         }
-        self.load_plan(app, plan, start, &options).await
+        self.load_plan(app, plan, start, options).await
     }
     async fn apply_fresh_preferences(&self, app: &AppHandle) -> AppResult<()> {
         let settings = self.store.settings()?;
@@ -670,14 +839,18 @@ impl PlayerManager {
                 "Your YouTube session changed. Select the video again.",
             ));
         }
-        if plan.video.heatmap.is_none() {
-            plan.video.heatmap = self.state.lock().ok().and_then(|state| {
-                state
-                    .video
-                    .as_ref()
-                    .filter(|item| item.id == plan.video.id)
-                    .and_then(|item| item.heatmap.clone())
-            });
+        if let Ok(state) = self.state.lock() {
+            if let Some(item) = state.video.as_ref().filter(|item| item.id == plan.video.id) {
+                if plan.video.heatmap.is_none() {
+                    plan.video.heatmap = item.heatmap.clone();
+                }
+                if plan.video.chapters.is_none() {
+                    plan.video.chapters = item.chapters.clone();
+                }
+                if plan.protocol != "cache" && plan.storyboard.is_none() {
+                    plan.storyboard = state.storyboard.clone();
+                }
+            }
         }
         let network = plan.protocol != "cache";
         let warming = (network && cacheable_duration(plan.video.duration)).then(|| plan.clone());
@@ -716,7 +889,8 @@ impl PlayerManager {
 
         self.change(app, |s| {
             s.status = "preparing".into();
-            s.video = Some(plan.video);
+            s.video = Some(plan.video.clone());
+            s.storyboard = plan.storyboard.clone();
             s.playback_mode = options.mode.clone();
             s.quality = if options.mode == "audio" {
                 0
@@ -726,7 +900,7 @@ impl PlayerManager {
             s.qualities = if options.mode == "audio" {
                 vec![]
             } else {
-                plan.qualities
+                plan.qualities.clone()
             };
             s.requested_quality = options_quality(s.requested_quality);
             s.position = start;
@@ -734,24 +908,96 @@ impl PlayerManager {
             s.error_code = None;
             s.buffered_seconds = 0.;
         });
-        self.commit_file(app, &plan.video_url, file_options, options, external_audio)
-            .await?;
+        self.commit_file(
+            app,
+            &plan.video_url,
+            file_options,
+            options,
+            external_audio,
+            network.then_some(&plan),
+        )
+        .await?;
         if network {
             self.install_cache_lease(None);
             *self.pending_cache.lock().map_err(AppError::io)? =
                 warming.map(|plan| (self.token(), plan));
             self.maybe_warm(app);
+        } else {
+            self.backfill_local_timeline(app, options);
         }
         Ok(())
     }
+
+    fn backfill_local_timeline(self: &Arc<Self>, app: &AppHandle, options: &LoadOptions) {
+        if self.check_load(app, options).is_err() {
+            return;
+        }
+        let lookup = self.state.lock().ok().and_then(|state| {
+            let video = state.video.as_ref()?;
+            let want_storyboard = options.mode == "video" && state.storyboard.is_none();
+            (state.load_id == options.load
+                && valid_video_id(&video.id)
+                && (want_storyboard || (options.mode == "audio" && video.chapters.is_none())))
+                .then(|| (video.id.clone(), want_storyboard))
+        });
+        let Some((video_id, want_storyboard)) = lookup else {
+            return;
+        };
+        let token = self.token();
+        let generation = options.generation;
+        let app = app.clone();
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let app_state = app.state::<AppState>();
+            let current = || {
+                !manager.closing.load(Ordering::SeqCst)
+                    && manager.token() == token
+                    && app_state.sessions.snapshot().generation == generation
+            };
+            if !current() {
+                return;
+            }
+            let Ok((chapters, storyboard)) = app_state
+                .gateway
+                .lookup_timeline(&app, &video_id, generation, want_storyboard)
+                .await
+            else {
+                return;
+            };
+            if let Ok(mut state) = manager.state.lock() {
+                if !current() || state.load_id != token.load || state.status == "failed" {
+                    return;
+                }
+                let Some(video) = state.video.as_mut().filter(|video| video.id == video_id) else {
+                    return;
+                };
+                let new_chapters = chapters.is_some() && video.chapters.is_none();
+                if new_chapters {
+                    video.chapters = chapters;
+                }
+                let new_storyboard = storyboard.is_some()
+                    && state.storyboard.is_none()
+                    && state.playback_mode == "video";
+                if new_storyboard {
+                    state.storyboard = storyboard;
+                }
+                if !new_chapters && !new_storyboard {
+                    return;
+                }
+            }
+            manager.publish(&app);
+        });
+    }
+
     async fn open_local_source(
         self: &Arc<Self>,
         app: &AppHandle,
         source: LocalSource,
         mut item: MediaItem,
         position: f64,
-        options: LoadOptions,
+        mut options: LoadOptions,
     ) -> AppResult<()> {
+        options.prefetch.take();
         self.ensure_engine(app).await?;
         let _switch = self.switching.lock().await;
         self.check_load(app, &options)?;
@@ -779,8 +1025,13 @@ impl PlayerManager {
         }
         self.send(json!(["set_property", "http-header-fields", []]))
             .await?;
+        let storyboard = app
+            .state::<AppState>()
+            .gateway
+            .cached_storyboard(&item.id, options.generation);
         self.change(app, |s| {
             s.status = "preparing".into();
+            s.storyboard = storyboard;
             s.video = Some(item);
             s.playback_mode = options.mode.clone();
             s.quality = if options.mode == "audio" {
@@ -798,8 +1049,9 @@ impl PlayerManager {
             s.error_code = None;
             s.buffered_seconds = 0.;
         });
-        self.commit_file(app, &source.path, file_options, &options, None)
+        self.commit_file(app, &source.path, file_options, &options, None, None)
             .await?;
+        self.backfill_local_timeline(app, &options);
         self.install_cache_lease(None);
         self.pending_cache.lock().map_err(AppError::io)?.take();
         Ok(())
@@ -811,27 +1063,42 @@ impl PlayerManager {
         file_options: serde_json::Map<String, Value>,
         options: &LoadOptions,
         external_audio: Option<String>,
+        online_plan: Option<&PlaybackPlan>,
     ) -> AppResult<()> {
         self.check_load(app, options)?;
         self.cancel_background(app);
-        let token = SourceToken {
-            load: options.load,
-            attempt: self.attempt.fetch_add(1, Ordering::SeqCst) + 1,
+        let token = {
+            let mut events = self.media_events.lock().map_err(AppError::io)?;
+            self.check_load(app, options)?;
+            let token = SourceToken {
+                load: options.load,
+                attempt: self.attempt.fetch_add(1, Ordering::SeqCst) + 1,
+            };
+            if let Some(context) = self
+                .recovery
+                .lock()
+                .map_err(AppError::io)?
+                .as_mut()
+                .filter(|context| context.load == token.load)
+            {
+                context.active = online_plan.map(|plan| (token, plan.clone()));
+            }
+            *self.ended_source.lock().map_err(AppError::io)? = None;
+            self.restarted.store(false, Ordering::SeqCst);
+            self.loaded.store(false, Ordering::SeqCst);
+            self.cache_paused.store(false, Ordering::SeqCst);
+            self.network_source.store(file_options["cache"] == "yes", Ordering::SeqCst);
+            *self.audio.lock().map_err(AppError::io)? = AudioState {
+                expected_external: external_audio.is_some(),
+                ..AudioState::default()
+            };
+            if let Ok(mut failure) = self.failure.lock() {
+                *failure = MediaFailure::Unknown;
+            }
+            *events = StartupClock::default();
+            self.entries.lock().map_err(AppError::io)?.begin(token);
+            token
         };
-        *self.ended_source.lock().map_err(AppError::io)? = None;
-        self.restarted.store(false, Ordering::SeqCst);
-        self.loaded.store(false, Ordering::SeqCst);
-        self.cache_paused.store(false, Ordering::SeqCst);
-        self.network_source.store(file_options["cache"] == "yes", Ordering::SeqCst);
-        *self.audio.lock().map_err(AppError::io)? = AudioState {
-            expected_external: external_audio.is_some(),
-            ..AudioState::default()
-        };
-
-        if let Ok(mut failure) = self.failure.lock() {
-            *failure = MediaFailure::Unknown;
-        }
-        self.entries.lock().map_err(AppError::io)?.begin(token);
         self.send(audio_source_command(external_audio)).await?;
         self.send(json!([
             "loadfile",
@@ -852,10 +1119,13 @@ impl PlayerManager {
                     "The player did not identify this source. Select the video again.",
                 )
             })?;
-        let early = self.entries.lock().map_err(AppError::io)?.bind(id, token);
-        for event in early {
-            if self.token() == token {
-                self.media_event(app, event);
+        {
+            // Replay pending events before the IPC reader can handle newer
+            // properties for the same entry.
+            let mut events = self.media_events.lock().map_err(AppError::io)?;
+            let early = self.entries.lock().map_err(AppError::io)?.bind(id, token);
+            for event in early {
+                self.media_event(app, event, token, &mut events);
             }
         }
         if !video_surface::is_canvas(app) {
@@ -898,13 +1168,13 @@ impl PlayerManager {
                     "This file was moved or deleted. Download it again to play offline.",
                 )
             })?;
-        app.state::<AppState>().gateway.cancel("playback-source");
+        app.state::<AppState>().gateway.cancel_playback_requests();
         self.cancel_background(app);
         self.save_history();
-        let mode = if task.mode == "audio" || self.store.settings()?.always_audio_only {
+        let mode = if task.mode == "audio" {
             "audio".into()
         } else {
-            self.snapshot().playback_mode
+            self.playback_mode_for_item(None)?
         };
         let load = self.load.fetch_add(1, Ordering::SeqCst) + 1;
         let generation = app.state::<AppState>().sessions.snapshot().generation;
@@ -913,17 +1183,28 @@ impl PlayerManager {
         if let Ok(mut context) = self.recovery.lock() {
             *context = None;
         }
-        self.change(app, |s| {
-            s.load_id = load;
-            s.video = Some(task.video.clone());
-            s.status = "preparing".into();
-            s.position = 0.;
-            s.duration = task.video.duration.unwrap_or(0.);
-            s.playback_mode = mode.clone();
-            s.error = None;
-            s.error_code = None;
-            s.requested_quality = options_quality(task.quality);
-        });
+        let options = LoadOptions {
+            load, generation, mode: mode.clone(), fresh_preferences: true,
+            exact_quality: false, force_refresh: false, prefer_hls: false, prefetch: None,
+        };
+        {
+            let _switch = self.switching.lock().await;
+            self.check_load(app, &options)?;
+            self.clear_subtitle(false).await;
+            self.change(app, |s| {
+                s.load_id = load;
+                s.video = Some(task.video.clone());
+                s.storyboard = None;
+                s.subtitle_track_id = None;
+                s.status = "preparing".into();
+                s.position = 0.;
+                s.duration = task.video.duration.unwrap_or(0.);
+                s.playback_mode = mode;
+                s.error = None;
+                s.error_code = None;
+                s.requested_quality = options_quality(task.quality);
+            });
+        }
         let result = self
             .open_local_source(
                 app,
@@ -935,14 +1216,7 @@ impl PlayerManager {
                 },
                 task.video,
                 0.,
-                LoadOptions {
-                    load,
-                    generation,
-                    mode,
-                    fresh_preferences: true,
-                    force_refresh: false,
-                    prefer_hls: false,
-                },
+                options,
             )
             .await;
         if let Err(ref error) = result {
@@ -952,10 +1226,51 @@ impl PlayerManager {
         }
         result
     }
+    pub fn save_settings(&self, app: &AppHandle, settings: &AppSettings) -> AppResult<()> {
+        let mut state = self.state.lock().map_err(AppError::io)?;
+        let preferred_mode = settings.remember_playback_mode.then(|| {
+            state.preferred_playback_mode.clone().unwrap_or_else(|| state.playback_mode.clone())
+        });
+        let changed = preferred_mode != state.preferred_playback_mode;
+        let initial_mode = if changed { preferred_mode.as_deref() } else { None };
+        self.store.save_settings(settings, initial_mode)?;
+        state.preferred_playback_mode = preferred_mode;
+        drop(state);
+        if changed {
+            self.publish(app);
+        }
+        Ok(())
+    }
+    fn remember_mode(&self, state: &mut PlayerState, mode: &str) -> AppResult<()> {
+        if state.preferred_playback_mode.as_deref().is_some_and(|previous| previous != mode) {
+            self.store.save_preferred_playback_mode(mode)?;
+            state.preferred_playback_mode = Some(mode.into());
+        }
+        Ok(())
+    }
+    fn playback_mode_for_item(&self, requested: Option<&str>) -> AppResult<String> {
+        let requested = requested.map(validated_mode).transpose()?;
+        let mut state = self.state.lock().map_err(AppError::io)?;
+        if let Some(mode) = requested {
+            self.remember_mode(&mut state, mode)?;
+        }
+        if let Some(mode) = &state.preferred_playback_mode {
+            return Ok(mode.clone());
+        }
+        if self.store.settings()?.always_audio_only {
+            return Ok("audio".into());
+        }
+        Ok(requested.unwrap_or(&state.playback_mode).into())
+    }
     pub async fn set_mode(self: &Arc<Self>, app: &AppHandle, mode: &str) -> AppResult<()> {
         let mode = validated_mode(mode)?.to_string();
-        let state = self.snapshot();
+        let state = {
+            let mut state = self.state.lock().map_err(AppError::io)?;
+            self.remember_mode(&mut state, &mode)?;
+            state.clone()
+        };
         if state.playback_mode == mode {
+            self.publish(app);
             return Ok(());
         }
         let Some(item) = state.video.clone() else {
@@ -982,21 +1297,34 @@ impl PlayerManager {
         if state.status == "ended" {
             self.desired_pause.store(false, Ordering::SeqCst);
         }
-        let force_refresh = mode.is_none();
+        let exact_quality = mode.is_none();
         let mode = mode.unwrap_or_else(|| state.playback_mode.clone());
         let local = self
             .local_path
             .lock()
             .map_err(AppError::io)?
             .clone()
-            .filter(|source| mode == "audio" || source.has_video);
-        app.state::<AppState>().gateway.cancel("playback-source");
-        self.cancel_background(app);
+            .filter(|source| mode == "audio" || source.has_video)
+            .filter(|source| !exact_quality || source.quality == quality);
+        let state_ref = app.state::<AppState>();
+        let generation = state_ref.sessions.snapshot().generation;
+        let prefetch = self.handoff_prefetch(app, &item, generation, &mode);
+        state_ref.gateway.cancel_playback_requests();
         let load = self.load.fetch_add(1, Ordering::SeqCst) + 1;
-        let generation = app.state::<AppState>().sessions.snapshot().generation;
         self.source_generation.store(generation, Ordering::SeqCst);
+        let options = LoadOptions {
+            load,
+            generation,
+            mode: mode.clone(),
+            fresh_preferences: false,
+            exact_quality,
+            force_refresh: false,
+            prefer_hls: false,
+            prefetch,
+        };
         {
             let _switch = self.switching.lock().await;
+            self.check_load(app, &options)?;
             if self.writer.lock().await.is_some() {
                 // Stop the old demuxers on mode changes so audio-only does not
                 // continue prefetching the paused video's network source.
@@ -1007,6 +1335,7 @@ impl PlayerManager {
                 };
                 let _ = self.send(command).await;
             }
+            self.check_load(app, &options)?;
             self.change(app, |s| {
                 s.load_id = load;
                 s.status = "resolving".into();
@@ -1016,28 +1345,12 @@ impl PlayerManager {
                 s.requested_quality = quality;
             });
         }
-        let options = LoadOptions {
-            load,
-            generation,
-            mode: mode.clone(),
-            fresh_preferences: false,
-            force_refresh,
-            prefer_hls: false,
-        };
         let result = if let Some(source) = local {
+            self.begin_recovery(&options, None, quality);
             self.open_local_source(app, source, item, position, options)
                 .await
         } else {
-            if let Ok(mut context) = self.recovery.lock() {
-                *context = Some(Recovery {
-                    item: item.clone(),
-                    quality,
-                    mode,
-                    generation,
-                    attempted: false,
-                    prefer_hls: false,
-                });
-            }
+            self.begin_recovery(&options, Some(item.clone()), quality);
             self.open_remote(app, &item, quality, position, options)
                 .await
         };
@@ -1081,6 +1394,10 @@ impl PlayerManager {
                 Some(canvas) => canvas,
                 None => self.spawn_engine(app, epoch, false).await?,
             };
+            {
+                let _events = self.media_events.lock().map_err(AppError::io)?;
+                self.entries.lock().map_err(AppError::io)?.reset();
+            }
             *self.process.lock().await = Some(child);
             *self.process_job.lock().map_err(AppError::io)? = Some(job);
             if !video_surface::is_canvas(app) {
@@ -1108,8 +1425,8 @@ impl PlayerManager {
                                     let _ = reply.send(value);
                                 }
                             }
-                        } else if manager.engine_epoch.load(Ordering::SeqCst) == epoch {
-                            manager.event(&handle, value);
+                        } else {
+                            manager.event(&handle, value, epoch);
                         }
                     }
                 }
@@ -1147,6 +1464,7 @@ impl PlayerManager {
                 "time-pos",
                 "duration",
                 "pause",
+                "eof-reached",
                 "volume",
                 "mute",
                 "speed",
@@ -1230,6 +1548,7 @@ impl PlayerManager {
                 "--keep-open=no",
                 "--config=no",
                 "--load-scripts=no",
+                "--stop-screensaver=no", // DisplayAwake owns the Windows request.
                 "--input-default-bindings=no",
                 "--input-vo-keyboard=no",
                 "--input-cursor=no",
@@ -1237,6 +1556,7 @@ impl PlayerManager {
                 "--input-doubleclick-time=250",
                 "--osc=no",
                 "--osd-level=0",
+                "--sub-pos=87",
                 "--ytdl=no",
                 "--tls-verify=yes",
                 "--network-timeout=20",
@@ -1326,8 +1646,10 @@ impl PlayerManager {
                 generation: self.source_generation.load(Ordering::SeqCst),
                 mode: state.playback_mode,
                 fresh_preferences: false,
+                exact_quality: false,
                 force_refresh: false,
                 prefer_hls: false,
+                prefetch: None,
             };
             if self.check_load(app, &options).is_err() {
                 return;
@@ -1482,15 +1804,16 @@ impl PlayerManager {
         }) {
             next.started = true;
             let target = next.target.clone();
-            let cancellation = next.cancel.clone();
             let generation = state_ref.sessions.snapshot().generation;
+            let lookup = state_ref.gateway.start_prefetch(
+                app, target.video_id, target.quality, target.mode, generation,
+            );
+            let completion = lookup.completion();
+            next.lookup = Some(lookup);
             background.running = true;
-            let app = app.clone();
             let manager = self.clone();
             tauri::async_runtime::spawn(async move {
-                let result = app.state::<AppState>().gateway
-                    .prefetch(&app, target.video_id, target.quality, &target.mode, generation, cancellation)
-                    .await;
+                let result = completion.await;
                 tracing::info!(load_id=token.load, ready=matches!(result, Ok(true)), "Queue source prefetch finished");
                 if let Ok(mut background) = manager.background.lock() {
                     background.running = false;
@@ -1522,27 +1845,35 @@ impl PlayerManager {
             {
                 return;
             }
-            if let Some(next) = background.next.take() {
-                next.cancel.cancel();
-            }
             background.next = target.map(|target| PrefetchAttempt {
-                target, load_id, cancel: CancellationToken::new(), started: false,
+                target, load_id, lookup: None, started: false,
             });
         }
     }
 
     fn cancel_background(&self, app: &AppHandle) {
         if let Ok(mut background) = self.background.lock() {
-            if let Some(next) = background.next.as_mut() {
-                if next.started {
-                    next.cancel.cancel();
-                }
-            }
-            if let Ok(mut pending) = self.pending_cache.lock() {
-                pending.take();
-            }
-            app.state::<AppState>().cache.cancel_pending(app);
+            self.release_background(app, &mut background);
         }
+    }
+
+    fn handoff_prefetch(
+        &self, app: &AppHandle, item: &MediaItem, generation: u64, mode: &str,
+    ) -> Option<PrefetchLookup> {
+        let mut background = self.background.lock().ok()?;
+        let prefetch = app.state::<AppState>().gateway.pending_prefetch(item, generation, mode);
+        self.release_background(app, &mut background);
+        prefetch
+    }
+
+    fn release_background(&self, app: &AppHandle, background: &mut QueueBackground) {
+        if let Some(next) = background.next.as_mut() {
+            next.lookup.take();
+        }
+        if let Ok(mut pending) = self.pending_cache.lock() {
+            pending.take();
+        }
+        app.state::<AppState>().cache.cancel_pending(app);
     }
     fn audio_check_active(&self, token: SourceToken) -> bool {
         self.token() == token
@@ -1669,7 +2000,13 @@ impl PlayerManager {
             }
         }
     }
-    fn event(self: &Arc<Self>, app: &AppHandle, value: Value) {
+    fn event(self: &Arc<Self>, app: &AppHandle, value: Value, epoch: u64) {
+        let Ok(mut events) = self.media_events.lock() else {
+            return;
+        };
+        if self.engine_epoch.load(Ordering::SeqCst) != epoch {
+            return;
+        }
         let event = value["event"].as_str().unwrap_or("");
         if event == "end-file" && value["reason"] != "redirect" {
             let ended = value["playlist_entry_id"].as_i64().and_then(|id| {
@@ -1714,42 +2051,67 @@ impl PlayerManager {
         if event == "property-change"
             && matches!(value["name"].as_str(), Some("volume" | "mute" | "speed"))
         {
-            self.media_event(app, value);
+            self.media_event(app, value, self.token(), &mut events);
             return;
         }
+        let token = self.token();
         let routed = self
             .entries
             .lock()
             .ok()
-            .and_then(|mut entries| entries.route(value, self.token()));
+            .and_then(|mut entries| entries.route(value, token));
         if let Some(event) = routed {
-            self.media_event(app, event);
+            self.media_event(app, event, token, &mut events);
         }
     }
-    fn media_event(self: &Arc<Self>, app: &AppHandle, value: Value) {
+    fn mark_file_loaded(self: &Arc<Self>, app: &AppHandle) -> bool {
+        if self.loaded.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        // Re-read the preference after loading too: a switch changed
+        // while the source was opening must apply to this very item.
+        let manager = self.clone();
+        let handle = app.clone();
+        let token = self.token();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = manager.refresh_normalization(&handle).await {
+                tracing::warn!(category=%error.code, "Audio normalization refresh failed");
+            }
+            manager.restore_subtitle(&handle, token).await;
+        });
+        if let Ok(mut retired) = self.retired_leases.lock() {
+            retired.clear();
+        }
+        true
+    }
+    fn mark_playback_restarted(self: &Arc<Self>, app: &AppHandle) {
+        // A restart also confirms that this file loaded if that event was missed.
+        self.mark_file_loaded(app);
+        self.restarted.store(true, Ordering::SeqCst);
+        self.set_play_status(app);
+        self.schedule_audio_check(app);
+        self.maybe_warm(app);
+    }
+    fn media_event(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        value: Value,
+        token: SourceToken,
+        startup: &mut StartupClock,
+    ) {
+        if self.token() != token {
+            return;
+        }
         match value["event"].as_str().unwrap_or("") {
             "file-loaded" => {
-                self.loaded.store(true, Ordering::SeqCst);
-                // Re-read the preference after loading too: a switch changed
-                // while the source was opening must apply to this very item.
-                let manager = self.clone();
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(error) = manager.refresh_normalization(&handle).await {
-                        tracing::warn!(category=%error.code, "Audio normalization refresh failed");
-                    }
-                });
-                if let Ok(mut retired) = self.retired_leases.lock() {
-                    retired.clear();
+                if self.mark_file_loaded(app) {
+                    self.set_play_status(app);
+                    self.schedule_audio_check(app);
                 }
-                self.set_play_status(app);
-                self.schedule_audio_check(app);
             }
             "playback-restart" => {
-                self.restarted.store(true, Ordering::SeqCst);
-                self.set_play_status(app);
-                self.schedule_audio_check(app);
-                self.maybe_warm(app);
+                startup.started = true;
+                self.mark_playback_restarted(app);
             }
             "property-change" => {
                 let name = value["name"].as_str().unwrap_or("");
@@ -1806,14 +2168,31 @@ impl PlayerManager {
                         }
                     }
                     "pause" => self.set_play_status(app),
+                    "eof-reached" if data.as_bool() == Some(true) => {
+                        self.finish_playback(app, true);
+                    }
                     "time-pos" | "duration" | "demuxer-cache-duration" => {
                         if let Some(number) = data.as_f64().filter(|n| n.is_finite()) {
+                            let mut starting = false;
                             if let Ok(mut state) = self.state.lock() {
                                 match name {
-                                    "time-pos" => state.position = number.max(0.),
+                                    "time-pos" if state.load_id == token.load && state.status != "ended" => {
+                                        state.position = number.max(0.);
+                                        starting = matches!(state.status.as_str(), "preparing" | "buffering");
+                                    }
+                                    "time-pos" => {}
                                     "duration" => state.duration = number.max(0.),
                                     _ => state.buffered_seconds = number.max(0.),
                                 }
+                            }
+                            // Actual clock movement can outlive a missing startup notification.
+                            // Reconcile only while opening this entry and keep the audio checks.
+                            if starting && !self.desired_pause.load(Ordering::SeqCst)
+                                && !self.cache_paused.load(Ordering::SeqCst)
+                                && self.token() == token
+                                && startup.advanced(number)
+                            {
+                                self.mark_playback_restarted(app);
                             }
                             let emit = self.last_frame_emit.lock().is_ok_and(|mut last| {
                                 if last.elapsed() >= Duration::from_millis(200) {
@@ -1865,20 +2244,7 @@ impl PlayerManager {
                 }
             }
             "end-file" => match value["reason"].as_str().unwrap_or("") {
-                "eof" => {
-                    let state = self.snapshot();
-                    if premature_eof(&state) {
-                        self.recover(app, self.token(), MediaFailure::Premature);
-                    } else {
-                        self.change(app, |s| {
-                            s.status = "ended".into();
-                            s.position = s.duration.max(s.position);
-                            s.error = None;
-                            s.error_code = None;
-                        });
-                        self.save_history();
-                    }
-                }
+                "eof" => self.finish_playback(app, false),
                 "error" => {
                     let structured =
                         classify_media_failure(value["file_error"].as_str().unwrap_or(""));
@@ -1886,7 +2252,7 @@ impl PlayerManager {
                         self.failure.lock().map(|f| *f).unwrap_or_default(),
                         structured,
                     );
-                    self.recover(app, self.token(), failure);
+                    self.recover(app, token, failure);
                 }
                 "redirect" => {
                     if let (Some(first), Some(count)) = (
@@ -1907,12 +2273,34 @@ impl PlayerManager {
             _ => {}
         }
     }
-    fn set_play_status(&self, app: &AppHandle) {
+    fn finish_playback(self: &Arc<Self>, app: &AppHandle, retained: bool) {
+        let token = self.token();
         let state = self.snapshot();
-        if matches!(
-            state.status.as_str(),
-            "idle" | "failed" | "ended" | "resolving"
-        ) {
+        if state.load_id != token.load
+            || matches!(state.status.as_str(), "ended" | "idle" | "failed" | "resolving")
+            || (retained && (state.playback_mode != "video" || !self.loaded.load(Ordering::SeqCst)))
+        {
+            return;
+        }
+        if premature_eof(&state) {
+            self.recover(app, token, MediaFailure::Premature);
+            return;
+        }
+        self.change(app, |s| {
+            if self.token() == token && s.load_id == token.load {
+                s.status = "ended".into();
+                s.position = s.duration.max(s.position);
+                s.error = None;
+                s.error_code = None;
+            }
+        });
+        self.save_history();
+    }
+    fn set_play_status(&self, app: &AppHandle) {
+        let token = self.token();
+        let state = self.snapshot();
+        if state.load_id != token.load
+            || matches!(state.status.as_str(), "idle" | "failed" | "ended" | "resolving") {
             return;
         }
         let status = if self.desired_pause.load(Ordering::SeqCst) {
@@ -1930,7 +2318,24 @@ impl PlayerManager {
             "playing"
         };
         if state.status != status {
-            self.change(app, |s| s.status = status.into());
+            if status == "playing" {
+                if let Ok(recovery) = self.recovery.lock() {
+                    let active = recovery.as_ref()
+                        .filter(|context| context.retrying != Some(token))
+                        .and_then(|context| context.active.as_ref());
+                    if let Some((_, plan)) =
+                        active.filter(|(active, _)| *active == token && self.token() == token)
+                    {
+                        app.state::<AppState>().gateway.remember_working_source(plan);
+                    }
+                }
+            }
+            self.change(app, |s| {
+                if self.token() == token && s.load_id == token.load
+                    && !matches!(s.status.as_str(), "idle" | "failed" | "ended" | "resolving") {
+                    s.status = status.into();
+                }
+            });
         }
     }
     fn recover(self: &Arc<Self>, app: &AppHandle, token: SourceToken, failure: MediaFailure) {
@@ -1946,49 +2351,62 @@ impl PlayerManager {
         }
         let can_retry = !matches!(failure, MediaFailure::Decoder | MediaFailure::Unavailable)
             && self.local_path.lock().map(|p| p.is_none()).unwrap_or(false);
-        let context = {
+        let request = {
             let Ok(mut recovery) = self.recovery.lock() else {
                 return;
             };
-            match recovery.as_mut() {
-                Some(context) if can_retry && !context.attempted => {
-                    context.attempted = true;
-                    if matches!(
-                        failure,
-                        MediaFailure::Rejected
-                            | MediaFailure::Network
-                            | MediaFailure::Unknown
-                            | MediaFailure::Premature
-                            | MediaFailure::AudioMissing
-                    ) {
-                        context.prefer_hls = true;
-                    }
-                    Some(context.clone())
+            if self.token() != token {
+                return;
+            }
+            let state_ref = app.state::<AppState>();
+            let context = recovery.as_mut().filter(|context| {
+                context.load == token.load
+                    && state.video.as_ref().is_some_and(|video| video.id == context.item.id)
+            });
+            if let Some(context) = context {
+                if context.retrying == Some(token)
+                    || context.generation != state_ref.sessions.snapshot().generation {
+                    return;
                 }
-                _ => None,
+                context.retrying = Some(token);
+                let active = context.active.take().filter(|(active, _)| *active == token);
+                if let Some((_, plan)) = &active {
+                    state_ref.gateway.reject_source(plan);
+                }
+                let video_url_missing = failure == MediaFailure::Unavailable
+                    && context.mode == "video" && active.is_some();
+                if can_retry || video_url_missing {
+                    context.next_retry(|plan| {
+                        plan.is_reusable() && active.as_ref()
+                            .is_none_or(|(_, opened)| !opened.same_source(plan))
+                    }).map(|retry| {
+                        let refresh = matches!(retry, SourceRetry::Refresh);
+                        let options = LoadOptions {
+                            load: token.load,
+                            generation: context.generation,
+                            mode: context.mode.clone(),
+                            fresh_preferences: false,
+                            exact_quality: false,
+                            force_refresh: refresh,
+                            prefer_hls: refresh && context.mode == "audio",
+                            prefetch: None,
+                        };
+                        (retry, context.item.clone(), context.quality, options)
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
             }
         };
-        let Some(context) = context else {
-            let message=match failure{MediaFailure::Decoder=>"This source could not be decoded. Try another quality or video.",MediaFailure::Rejected=>"YouTube rejected the refreshed media source. Retry the video or reconnect your session.",MediaFailure::Network=>"The media connection failed. Check your connection, then retry.",MediaFailure::Premature=>"The source ended before the video was complete. Retry to get a fresh source.",MediaFailure::AudioMissing=>"The video's audio source could not be opened. Retry or choose another quality.",_=>"This source could not be played. Retry or choose another quality."};
-            self.fail(app, &AppError::new(failure.code(), message));
+        let Some((retry, item, quality, options)) = request else {
+            self.fail_attempt(app, token, &failure.error());
             return;
         };
-        if state.load_id != token.load
-            || state.video.as_ref().map(|v| &v.id) != Some(&context.item.id)
-        {
-            return;
-        }
         let manager = self.clone();
         let app = app.clone();
         let future: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(async move {
-            let options = LoadOptions {
-                load: token.load,
-                generation: context.generation,
-                mode: context.mode,
-                fresh_preferences: false,
-                force_refresh: true,
-                prefer_hls: context.prefer_hls,
-            };
             if manager.check_load(&app, &options).is_err() || manager.token() != token {
                 return;
             }
@@ -1996,25 +2414,31 @@ impl PlayerManager {
                 let Ok(mut s) = manager.state.lock() else {
                     return;
                 };
-                if s.load_id != token.load
+                if manager.token() != token || s.load_id != token.load
                     || matches!(s.status.as_str(), "ended" | "failed" | "idle" | "resolving")
                 {
                     return;
                 }
                 s.status = "resolving".into();
-                s.error = Some("Refreshing the video source…".into());
+                s.error = options.force_refresh.then(|| "Refreshing the video source…".into());
                 s.error_code = None;
             }
+            tracing::info!(
+                load_id = token.load,
+                attempt = token.attempt,
+                action = if options.force_refresh { "refresh" } else { "alternate" },
+                category = failure.code(),
+                "Playback source recovery selected"
+            );
             manager.publish(&app);
-            let result = manager
-                .open_remote(
-                    &app,
-                    &context.item,
-                    context.quality,
-                    state.position,
-                    options,
-                )
-                .await;
+            let result = match retry {
+                SourceRetry::Alternate(plan) => {
+                    manager.open_online_plan(&app, plan, None, state.position, &options).await
+                }
+                SourceRetry::Refresh => {
+                    manager.open_remote(&app, &item, quality, state.position, options).await
+                }
+            };
             if let Err(error) = result {
                 if manager.load.load(Ordering::SeqCst) == token.load && error.code != "cancelled" {
                     manager.fail(&app, &error);
@@ -2049,9 +2473,6 @@ impl PlayerManager {
     ) -> AppResult<()> {
         let state = self.snapshot();
         let value = value.filter(|v| v.is_finite());
-        // mpv unloads its source at natural EOF. Seeking or replaying the final
-        // queue item must reopen that item, rather than seeking an idle engine.
-        // This bypasses queue selection changes and retains the chosen mode.
         if state.status == "ended" && matches!(action, "seek" | "toggle" | "resume") {
             let position = if action == "seek" {
                 value
@@ -2063,6 +2484,36 @@ impl PlayerManager {
             if position >= state.duration && state.duration > 0. {
                 return Ok(());
             }
+            {
+                let _source = self.switching.lock().await;
+                ensure_control_load(
+                    state.load_id,
+                    self.load.load(Ordering::SeqCst),
+                    self.closing.load(Ordering::SeqCst),
+                )?;
+                if self.snapshot().status != "ended" {
+                    return Ok(());
+                }
+                if state.playback_mode == "video"
+                    && self.send(json!(["get_property", "eof-reached"])).await
+                        .is_ok_and(|value| value.as_bool() == Some(true))
+                {
+                    self.cancel_background(app);
+                    self.desired_pause.store(false, Ordering::SeqCst);
+                    self.restarted.store(false, Ordering::SeqCst);
+                    self.change(app, |s| {
+                        s.status = "buffering".into();
+                        s.position = position;
+                    });
+                    if self.send(json!(["seek", position, "absolute+exact"])).await.is_ok()
+                        && self.send(json!(["set_property", "pause", false])).await.is_ok()
+                    {
+                        self.set_play_status(app);
+                        return Ok(());
+                    }
+                }
+            }
+            // An unloaded source, including audio at EOF, needs to be reopened.
             let item = state
                 .video
                 .clone()
@@ -2155,7 +2606,7 @@ impl PlayerManager {
                 }
             }
             "stop" => {
-                app.state::<AppState>().gateway.cancel("playback-source");
+                app.state::<AppState>().gateway.cancel_playback_requests();
                 self.cancel_background(app);
                 self.save_history();
                 self.load.fetch_add(1, Ordering::SeqCst);
@@ -2167,9 +2618,12 @@ impl PlayerManager {
                 if self.writer.lock().await.is_some() {
                     let _ = self.send(json!(["stop"])).await;
                 }
+                self.clear_subtitle(false).await;
                 self.change(app, |s| {
                     s.status = "idle".into();
                     s.video = None;
+                    s.storyboard = None;
+                    s.subtitle_track_id = None;
                     s.position = 0.;
                     s.error = None;
                     s.error_code = None;
@@ -2179,13 +2633,8 @@ impl PlayerManager {
             _ => return Err(AppError::new("invalid_action", "Unknown playback control.")),
         }
         if matches!(action, "volume" | "adjust-volume" | "mute" | "speed") {
-            if let Ok(mut settings) = self.store.settings() {
-                let current = self.snapshot();
-                settings.volume = current.volume;
-                settings.muted = current.muted;
-                settings.playback_rate = current.speed;
-                let _ = self.store.save_settings(&settings);
-            }
+            let current = self.snapshot();
+            let _ = self.store.update_playback_controls(current.volume, current.muted, current.speed);
         }
         Ok(())
     }
@@ -2346,13 +2795,18 @@ impl PlayerManager {
     }
     pub async fn invalidate_session(&self, app: &AppHandle) {
         self.cancel_background(app);
-        if self.local_path.lock().map(|p| p.is_some()).unwrap_or(false) {
-            return;
-        }
         let _switch = self.switching.lock().await;
         if self.source_generation.load(Ordering::SeqCst)
             == app.state::<AppState>().sessions.snapshot().generation
         {
+            return;
+        }
+        if self.local_path.lock().map(|p| p.is_some()).unwrap_or(false) {
+            self.clear_subtitle(true).await;
+            self.change(app, |s| {
+                s.storyboard = None;
+                s.subtitle_track_id = None;
+            });
             return;
         }
         self.save_history();
@@ -2364,9 +2818,12 @@ impl PlayerManager {
         if self.writer.lock().await.is_some() {
             let _ = self.send(json!(["stop"])).await;
         }
+        self.clear_subtitle(false).await;
         self.change(app, |s| {
             s.status = "idle".into();
             s.video = None;
+            s.storyboard = None;
+            s.subtitle_track_id = None;
             s.error = None;
             s.error_code = None;
         });
@@ -2374,9 +2831,10 @@ impl PlayerManager {
     }
     pub fn begin_shutdown(&self) {
         self.closing.store(true, Ordering::SeqCst);
-        if let Ok(background) = self.background.lock() {
-            if let Some(next) = &background.next {
-                next.cancel.cancel();
+        self.update_display_awake();
+        if let Ok(mut background) = self.background.lock() {
+            if let Some(next) = &mut background.next {
+                next.lookup.take();
             }
         }
         self.load.fetch_add(1, Ordering::SeqCst);
@@ -2399,6 +2857,7 @@ impl PlayerManager {
         if let Ok(mut replies) = self.replies.lock() {
             replies.clear();
         }
+        self.clear_subtitle(false).await;
         self.clear_cache_leases();
     }
 }
@@ -2474,7 +2933,11 @@ fn source_options(
         json!(if mode == "audio" { "no" } else { "auto" }),
     );
     options.insert("aid".into(), json!("auto"));
+    options.insert("sid".into(), json!("no"));
     options.insert("audio-display".into(), json!("no"));
+    // Viewsical owns queue advancement. Keep the current video and its final
+    // frame available to seek after EOF until the next app load or stop.
+    options.insert("keep-open".into(), json!(if mode == "video" { "yes" } else { "no" }));
     options.insert("cache".into(), json!(if network { "yes" } else { "no" }));
     options.insert(
         "cache-pause-initial".into(),
@@ -2695,6 +3158,29 @@ pub fn player_state(state: State<'_, AppState>) -> PlayerState {
     state.player.snapshot()
 }
 
+#[tauri::command]
+pub async fn player_subtitle_tracks(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    load_id: u64,
+) -> AppResult<Vec<SubtitleTrack>> {
+    ensure_control_window(window.label())?;
+    state.player.list_subtitles(&app, load_id).await
+}
+
+#[tauri::command]
+pub async fn set_player_subtitle(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    load_id: u64,
+    track_id: Option<String>,
+) -> AppResult<()> {
+    ensure_control_window(window.label())?;
+    state.player.select_subtitle(&app, load_id, track_id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2743,6 +3229,7 @@ mod tests {
             muted: false,
             playback_rate: 1.,
             always_audio_only: false,
+            remember_playback_mode: false,
             normalize_audio: true,
             close_to_tray: false,
         };
@@ -2789,6 +3276,38 @@ mod tests {
             .is_none());
     }
     #[test]
+    fn engine_reset_accepts_early_events_for_reused_entry_id() {
+        let prior = SourceToken { load: 1, attempt: 1 };
+        let fallback = SourceToken { load: 1, attempt: 2 };
+        let mut tracker = EntryTracker::default();
+        tracker.bind(1, prior);
+        tracker.route(json!({"event":"start-file","playlist_entry_id":1}), prior);
+
+        tracker.reset();
+        tracker.begin(fallback);
+        let startup = [
+            json!({"event":"start-file","playlist_entry_id":1}),
+            json!({"event":"file-loaded"}),
+            json!({"event":"playback-restart"}),
+        ];
+        for event in &startup {
+            assert!(tracker.route(event.clone(), fallback).is_none());
+        }
+        assert_eq!(tracker.bind(1, fallback), startup);
+    }
+
+    #[test]
+    fn startup_clock_requires_continued_movement() {
+        let mut clock = StartupClock::default();
+        assert!(!clock.advanced(0.));
+        assert!(!clock.advanced(5.)); // A single seek/jump alone is not playback.
+        assert!(!clock.advanced(5.));
+        assert!(!clock.advanced(5.04));
+        assert!(clock.advanced(5.08));
+        assert!(!clock.advanced(5.12)); // Reconcile at most once per source.
+    }
+
+    #[test]
     fn retry_attempts_have_distinct_entry_identity() {
         let old = SourceToken {
             load: 7,
@@ -2821,6 +3340,45 @@ mod tests {
             )
             .is_none());
     }
+
+    #[test]
+    fn recovery_consumes_one_alternate_and_one_refresh() {
+        let options = LoadOptions {
+            load: 7,
+            generation: 1,
+            fresh_preferences: false,
+            mode: "video".into(),
+            exact_quality: false,
+            force_refresh: false,
+            prefer_hls: false,
+            prefetch: None,
+        };
+        let mut recovery = Recovery::new(&options, MediaItem::default(), 1080);
+        let alternate = PlaybackPlan {
+            video_url: "https://example.invalid/video".into(),
+            audio_url: None,
+            headers: vec![],
+            selected_quality: 1080,
+            qualities: vec![],
+            session_generation: options.generation,
+            video: MediaItem::default(),
+            storyboard: None,
+            mode: options.mode.clone(),
+            protocol: "https".into(),
+            format_id: "fixture".into(),
+            expires_at: None,
+            audio_headers: vec![],
+        };
+        recovery.alternate = Some(alternate.clone());
+        assert!(matches!(recovery.next_retry(|_| true), Some(SourceRetry::Alternate(_))));
+        assert!(matches!(recovery.next_retry(|_| true), Some(SourceRetry::Refresh)));
+        assert!(recovery.next_retry(|_| true).is_none());
+
+        let mut expired = Recovery::new(&options, MediaItem::default(), 1080);
+        expired.alternate = Some(alternate);
+        assert!(matches!(expired.next_retry(PlaybackPlan::is_reusable), Some(SourceRetry::Refresh)));
+        assert!(expired.next_retry(|_| true).is_none());
+    }
     #[test]
     fn source_options_clear_external_tracks_for_audio_mode() {
         let options = source_options(12.5, "audio", true, true);
@@ -2832,7 +3390,9 @@ mod tests {
         );
         assert_eq!(options["pause"], "yes");
         assert_eq!(options["start"], "12.5");
+        assert_eq!(options["keep-open"], "no");
         assert_eq!(source_options(12.5, "video", false, true)["vid"], "auto");
+        assert_eq!(source_options(12.5, "video", false, true)["keep-open"], "yes");
         assert_eq!(source_options(12.5, "video", false, false)["cache"], "no");
     }
     #[test]

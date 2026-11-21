@@ -1,0 +1,135 @@
+.watch-channel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 16px;
+  min-width: 0;
+}
+.watch-channel .channel-info {
+  background: transparent;
+  padding: 0;
+  min-width: 0;
+  text-align: left;
+}
+.watch-channel .channel-info:hover strong { text-decoration: underline; }
+.watch-channel .channel-avatar {
+  position: relative;
+  overflow: hidden;
+}
+.watch-channel .channel-avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.watch-channel-copy { min-width: 0; }
+.watch-channel-copy strong { overflow-wrap: anywhere; }
+.watch-channel-copy small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.watch-channel .channel-subscription { min-width: 0; margin-top: 0; }
+.watch-channel .channel-subscribe { min-height: 40px; }
+.watch-actions .button.watch-download {
+  width: 42px;
+  padding: 0;
+}
+.recommendation-thumbnail {
+  background: transparent;
+  align-self: flex-start;
+  flex: 0 0 140px;
+  border-radius: 8px;
+  padding: 0;
+}
+.recommendation-thumbnail .thumbnail { width: 100%; border-radius: inherit; }
+.recommendation-copy { flex: 1; min-width: 0; padding-inline: 5px 3px; }
+.recommendation-title, .recommendation-channel {
+  background: transparent;
+  text-align: left;
+  padding: 0;
+}
+.recommendation-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.recommendation-channel {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.recommendation-channel:hover, .recommendation-channel:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+}
+.recommendation-copy small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.recommendation-more { width: 100%; }
+.recommendation-error { color: var(--error); font-size: 12px; margin: 0 0 8px; }
+.save-video-title {
+  color: var(--muted);
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.save-playlist-destinations { margin: 14px 0; }
+.save-playlist-options {
+  display: grid;
+  gap: 5px;
+  max-height: min(270px, 35vh);
+  overflow-y: auto;
+  padding: 3px;
+  list-style: none;
+  margin: 0 0 14px;
+}
+.save-playlist-option {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 13px;
+  background: var(--subtle);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.save-playlist-option svg { flex-shrink: 0; }
+.save-playlist-option:hover:not(:disabled) { background: var(--surface-hover); }
+.save-playlist-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.save-playlist-status[role="alert"] { color: var(--error); }
+.save-playlist-create .field { margin-bottom: 10px; }
+@media (min-width: 1750px) {
+  .recommendation-thumbnail { flex-basis: 155px; }
+}
+@media (max-width: 1350px) {
+  .recommendation-thumbnail { flex-basis: 110px; }
+}

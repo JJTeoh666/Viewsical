@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-video-channel"
+description = "Enables the video_channel command without any pre-configured scope."
+commands.allow = ["video_channel"]
+
+[[permission]]
+identifier = "deny-video-channel"
+description = "Denies the video_channel command without any pre-configured scope."
+commands.deny = ["video_channel"]

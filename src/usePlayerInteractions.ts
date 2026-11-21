@@ -41,19 +41,26 @@ export function usePlayerShortcuts({ player, blocked = false, fullscreen, onActi
 
 export function usePlayerVisibility(player: PlayerState) {
   const [visible, setVisible] = useState(false);
-  const inside = useRef(false), menu = useRef(false), dragging = useRef(false), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const inside = useRef(false), menu = useRef(false), dragging = useRef(false), overTimeline = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const paused = useRef(player.status === 'paused'); paused.current = player.status === 'paused';
   const clear = useCallback(() => { clearTimeout(timer.current); }, []);
   const arm = useCallback(() => {
     clear();
-    if (inside.current && !menu.current && !dragging.current && !paused.current) timer.current = setTimeout(() => setVisible(false), 2500);
+    if (inside.current && !menu.current && !dragging.current && !overTimeline.current && !paused.current) timer.current = setTimeout(() => setVisible(false), 2500);
   }, [clear]);
-  const reveal = useCallback(() => { inside.current = true; setVisible(true); arm(); }, [arm]);
-  const hide = useCallback(() => { inside.current = false; menu.current = false; clear(); setVisible(false); }, [clear]);
+  const reveal = useCallback((event?: ReactPointerEvent<HTMLElement>) => {
+    inside.current = true;
+    if (event) overTimeline.current = event.pointerType !== 'touch'
+      && event.target instanceof Element && !!event.target.closest('[data-player-timeline]');
+    setVisible(true);
+    arm();
+  }, [arm]);
+  const hide = useCallback(() => { inside.current = false; menu.current = false; overTimeline.current = false; clear(); setVisible(false); }, [clear]);
   const onMenuChange = useCallback((open: boolean) => { menu.current = open; if (open) clear(); else arm(); }, [arm, clear]);
   const onDragging = useCallback((active: boolean) => { dragging.current = active; if (active) clear(); else arm(); }, [arm, clear]);
   useEffect(() => { if (inside.current && paused.current) setVisible(true); arm(); }, [player.status, arm]);
-  useEffect(() => { menu.current = false; dragging.current = false; setVisible(inside.current); arm(); }, [player.loadId, arm]);
+  useEffect(() => { menu.current = false; dragging.current = false; overTimeline.current = false; setVisible(inside.current); arm(); }, [player.loadId, arm]);
   useEffect(() => { window.addEventListener('blur', hide); return () => { clear(); window.removeEventListener('blur', hide); }; }, [hide, clear]);
   return { visible, reveal, hide, onMenuChange, onDragging };
 }

@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import type { KeyboardEvent } from 'react';
-import { AlertCircle, Check, ChevronDown, Clock3, ListFilter, LoaderCircle, MessageSquare, MessageSquareOff, Pin, RefreshCw, ThumbsUp } from 'lucide-react';
-import { isDesktop } from './api';
+import { AlertCircle, Check, ChevronDown, Clock3, Languages, ListFilter, LoaderCircle, MessageSquare, MessageSquareOff, Pin, RefreshCw, ThumbsUp } from 'lucide-react';
+import { api, isDesktop } from './api';
 import { COMMENT_LIMIT, CommentCache, commentKey } from './commentCache';
+import { commentTimestamps } from './commentTimestamps';
+import { errorMessage } from './format';
 import { IconButton } from './ui';
 import type { CommentSort, VideoComment } from './types';
 import './comments-sort.css';
@@ -48,20 +50,85 @@ function CommentSortMenu({ sort, disabled, onSort }: { sort: CommentSort; disabl
   </div>;
 }
 
-function CommentRow({ comment }: { comment: VideoComment }) {
+type CommentTranslation = { source: string } & (
+  { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; text: string; show: boolean }
+);
+
+function CommentText({ text, duration, onSeek }: { text: string; duration: number; onSeek: (seconds: number) => void }) {
+  const timestamps = commentTimestamps(text, duration);
+  let start = 0;
+  const content = timestamps.map(({ index, label, seconds }) => {
+    const precedingText = text.slice(start, index);
+    start = index + label.length;
+    return <span key={index}>{precedingText}<button type="button" className="comment-timestamp" dir="ltr" aria-label={`Jump to ${label}`} onClick={() => onSeek(seconds)}>{label}</button></span>;
+  });
+  return <>{content}{text.slice(start)}</>;
+}
+
+function CommentRow({ comment, generation, duration, onSeek, onOpenAuthor }: {
+  comment: VideoComment; generation: number; duration: number; onSeek: (seconds: number) => void;
+  onOpenAuthor: (channelId: string, name: string, thumbnail: string | null) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
-  const long = comment.text.length > 350 || comment.text.split('\n').length > 4;
+  const [translation, setTranslation] = useState<CommentTranslation | null>(null);
+  const request = useRef(0);
+  const result = translation?.source === comment.text ? translation : null;
+  const translated = result?.status === 'ready' && result.text.trim() !== comment.text.trim();
+  const showTranslation = result?.status === 'ready' && translated && result.show;
+  const text = showTranslation ? result.text : comment.text;
+  const long = text.length > 350 || text.split('\n').length > 4;
+
+  async function translate() {
+    if (result?.status === 'ready') {
+      setTranslation({ ...result, show: !result.show });
+      return;
+    }
+    const source = comment.text;
+    const id = ++request.current;
+    setTranslation({ source, status: 'loading' });
+    try {
+      const text = await api.translateComment(generation, source);
+      if (request.current === id) setTranslation({ source, status: 'ready', text, show: true });
+    } catch (error) {
+      if (request.current === id && (error as { code?: string } | null)?.code !== 'cancelled') {
+        setTranslation({ source, status: 'error', message: errorMessage(error) });
+      }
+    }
+  }
+
+  const author = comment.author || 'YouTube user';
+  const channelId = comment.authorChannelId;
+  const openProfile = channelId ? () => onOpenAuthor(channelId, author, comment.authorThumbnail) : undefined;
+  const avatar = <>{Array.from(author)[0].toUpperCase()}{comment.authorThumbnail && <img src={comment.authorThumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" onError={event => { event.currentTarget.hidden = true; }} />}</>;
+
   return <article className="comment-row">
-    <div className="comment-avatar" aria-hidden="true">{comment.authorThumbnail ? <img src={comment.authorThumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" onError={event => { event.currentTarget.style.visibility = 'hidden'; }} /> : (comment.author[0] || '?').toUpperCase()}</div>
-    <div className="comment-body">{comment.isPinned && <div className="comment-pinned"><Pin size={12} />Pinned</div>}<div className="comment-author"><strong>{comment.author || 'YouTube user'}</strong>{comment.authorIsUploader && <span className="comment-creator">Creator</span>}{comment.published && <time>{comment.published}</time>}</div>
-      <p className={`comment-text ${long && !expanded ? 'comment-collapsed' : ''}`} dir="auto">{comment.text}</p>
-      {long && <button className="comment-expand" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? 'Show less' : 'Read more'}</button>}
+    {openProfile
+      ? <button type="button" className="comment-avatar" tabIndex={-1} aria-label={`Open ${author}'s profile`} onClick={openProfile}>{avatar}</button>
+      : <span className="comment-avatar" aria-hidden="true">{avatar}</span>}
+    <div className="comment-body">{comment.isPinned && <div className="comment-pinned"><Pin size={12} />Pinned</div>}<div className="comment-author">
+      {openProfile ? <button type="button" className="comment-author-link" onClick={openProfile}>{author}</button> : <strong>{author}</strong>}
+      {comment.authorIsUploader && <span className="comment-creator">Creator</span>}{comment.published && <time>{comment.published}</time>}</div>
+      <p className={`comment-text ${long && !expanded ? 'comment-collapsed' : ''}`} dir="auto" lang={showTranslation ? 'en' : undefined}><CommentText text={text} duration={duration} onSeek={onSeek} /></p>
+      <div className="comment-text-actions">
+        {long && <button type="button" className="comment-expand" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? 'Show less' : 'Read more'}</button>}
+        {result?.status === 'ready' && !translated
+          ? <span className="comment-translation-status" role="status">No translation needed</span>
+          : <button type="button" className="comment-translate" disabled={result?.status === 'loading'} onClick={() => void translate()}>
+            {result?.status === 'loading' ? <LoaderCircle aria-hidden="true" size={14} className="spin" /> : <Languages aria-hidden="true" size={14} />}
+            {result?.status === 'loading' ? 'Translating…' : showTranslation ? 'Show original' : result?.status === 'error' ? 'Retry translation' : 'Translate to English'}
+          </button>}
+      </div>
+      {result?.status === 'error' && <p className="comment-translation-error" role="alert">{result.message}</p>}
       {(comment.likeCount != null || comment.replyCount != null) && <div className="comment-counts">{comment.likeCount != null && <span aria-label={`${comment.likeCount.toLocaleString()} likes`}><ThumbsUp size={14} />{comment.likeCount.toLocaleString()}</span>}{comment.replyCount != null && comment.replyCount > 0 && <span>{comment.replyCount.toLocaleString()} {comment.replyCount === 1 ? 'reply' : 'replies'}</span>}</div>}
     </div>
   </article>;
 }
 
-export function CommentsPanel({ videoId, generation, cache, sort, onSort }: { videoId: string; generation: number; cache: CommentCache; sort: CommentSort; onSort: (sort: CommentSort) => void }) {
+export function CommentsPanel({ videoId, generation, cache, sort, onSort, duration, onSeek, onOpenAuthor }: {
+  videoId: string; generation: number; cache: CommentCache; sort: CommentSort;
+  onSort: (sort: CommentSort) => void; duration: number; onSeek: (seconds: number) => void;
+  onOpenAuthor: (channelId: string, name: string, thumbnail: string | null) => void;
+}) {
   const key = commentKey(generation, videoId, sort);
   const entry = useSyncExternalStore(cache.subscribe, () => cache.get(key));
   useEffect(() => {
@@ -76,7 +143,7 @@ export function CommentsPanel({ videoId, generation, cache, sort, onSort }: { vi
     <p className="comments-readonly">Comments from YouTube. Viewing only.</p>
     {initial ? <div className="comments-loading" role="status"><LoaderCircle size={18} className="spin" />Loading comments…</div> : entry?.disabled ? <div className="comments-empty"><MessageSquareOff size={23} /><p>Comments are turned off for this video.</p></div> : <>
       {entry?.error && <div className="comments-error" role="alert"><AlertCircle size={18} /><p>{entry.error}</p><button className="button secondary small" onClick={() => void (entry.errorCode === 'comments_changed' ? cache.refresh(key, videoId, sort) : cache.retry(key))}>{entry.errorCode === 'comments_changed' ? 'Refresh comments' : 'Retry'}</button></div>}
-      {!!entry?.items.length && <div className="comment-list">{entry.items.map(comment => <CommentRow key={comment.id} comment={comment} />)}</div>}
+      {!!entry?.items.length && <div className="comment-list" key={`${videoId}:${generation}`}>{entry.items.map(comment => <CommentRow key={comment.id} comment={comment} generation={generation} duration={duration} onSeek={onSeek} onOpenAuthor={onOpenAuthor} />)}</div>}
       {!entry?.items.length && !entry?.error && <div className="comments-empty"><MessageSquare size={23} /><p>No comments to show.</p></div>}
       {entry?.nextCursor && !entry.limited && <div className="comments-load-more"><button className="button secondary" disabled={entry.loadingMore} onClick={() => void cache.loadMore(key)}>{entry.loadingMore ? <LoaderCircle size={17} className="spin" /> : <ChevronDown size={17} />}{entry.loadingMore ? 'Loading…' : 'Load more comments'}</button></div>}
       {entry?.limited && <p className="comments-limit">Showing the first {COMMENT_LIMIT} comments for this sort order.</p>}

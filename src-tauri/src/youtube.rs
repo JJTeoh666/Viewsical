@@ -3,19 +3,29 @@
 //!
 //! The gateway owns request/session state; focused sibling modules implement
 //! provider execution, browsing, playback resolution, identity, and metadata.
+pub(crate) mod account;
 mod browse;
+mod channel;
 mod errors;
 mod gateway;
 mod identity;
+pub(crate) mod local_playlists;
 mod metadata;
+mod pending;
 mod playback;
+mod subtitles;
+mod timeline;
 mod process;
+pub(crate) mod watch;
 
 pub use errors::classify_error;
 pub use gateway::YoutubeGateway;
 pub use identity::{canonical_video, ensure_generation, normalize_video_ref};
+pub(crate) use identity::valid_channel_id;
 pub use metadata::media_item;
-pub(crate) use metadata::replay_heatmap;
+pub(crate) use metadata::{replay_heatmap, video_chapters};
+pub(crate) use pending::PrefetchLookup;
+pub(crate) use playback::PlaybackSelection;
 pub use playback::PlaybackPlan;
 
 use crate::{

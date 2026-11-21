@@ -1,4 +1,5 @@
 mod comments;
+mod display_awake;
 mod downloads;
 mod media_cache;
 mod models;
@@ -141,7 +142,7 @@ async fn bootstrap(state: tauri::State<'_, AppState>) -> AppResult<Bootstrap> {
 #[tauri::command]
 async fn save_settings(
     app: tauri::AppHandle,
-    settings: AppSettings,
+    mut settings: AppSettings,
     state: tauri::State<'_, AppState>,
 ) -> AppResult<AppSettings> {
     if !["system", "light", "dark"].contains(&settings.theme.as_str())
@@ -163,7 +164,10 @@ async fn save_settings(
         ));
     }
     std::fs::create_dir_all(&settings.download_directory).map_err(AppError::io)?;
-    state.store.save_settings(&settings)?;
+    if settings.remember_playback_mode {
+        settings.always_audio_only = false;
+    }
+    state.player.save_settings(&app, &settings)?;
     if let Err(error) = state.player.refresh_normalization(&app).await {
         tracing::warn!(category=%error.code, "Audio normalization will refresh with the next source");
     }
@@ -285,10 +289,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![bootstrap,save_settings,clear_history,reveal_download,
             session::open_sign_in,session::complete_sign_in,session::sign_out,session::session_state,
-            youtube::browse,youtube::cancel_browse,
-            comments::video_comments,comments::cancel_comments,
+            youtube::browse,youtube::cancel_browse,youtube::watch::watch_details,youtube::watch::rate_video,
+            youtube::account::channel_subscription,youtube::account::set_channel_subscription,
+            youtube::local_playlists::local_playlists,youtube::local_playlists::local_playlist,
+            youtube::local_playlists::import_local_playlist,youtube::local_playlists::remove_local_playlist,
+            youtube::local_playlists::save_local_playlist_video,youtube::watch::video_channel,
+            youtube::account::youtube_playlist_save,
+            comments::video_comments,comments::cancel_comments,comments::translate_comment,
             media_cache::cache_summary,media_cache::cache_configure,media_cache::cache_clear,
             player::set_playback_mode,player::player_ui_context,player::player_queue_prefetch,player::play_video,player::play_local,player::player_action,player::player_bounds,player::player_state,player::player_overlay_snapshot,player::player_overlay_action,player::retry_player_overlay,
+            player::player_subtitle_tracks,player::set_player_subtitle,
             video_surface::video_renderer_mode, video_surface::video_surface_configure, video_surface::video_surface_release, video_surface::video_surface_failed,
             downloads::enqueue_download,downloads::download_action])
         .build(tauri::generate_context!()).expect("Could not start Viewsical");

@@ -40,6 +40,8 @@ pub struct MediaItem {
     pub kind: String,
     pub title: String,
     pub channel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
     pub thumbnail: Option<String>,
     pub url: String,
     pub duration: Option<f64>,
@@ -51,6 +53,29 @@ pub struct MediaItem {
     pub youtube_loudness_db: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heatmap: Option<Vec<ReplayHeatSegment>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapters: Option<Vec<VideoChapter>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoChapter {
+    pub start_time: f64,
+    pub end_time: f64,
+    pub title: String,
+}
+
+// Storyboard URLs are transient. Keep them in playback state, out of saved media items.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Storyboard {
+    pub url_template: String,
+    pub width: u32,
+    pub height: u32,
+    pub columns: u32,
+    pub rows: u32,
+    pub frame_count: u32,
+    pub frame_duration: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,10 +99,27 @@ pub struct CollectionSummary {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChannelProfile {
+    pub id: String,
+    pub title: String,
+    pub handle: Option<String>,
+    pub avatar: Option<String>,
+    pub banner: Option<String>,
+    pub description: Option<String>,
+    pub subscriber_count: Option<u64>,
+    pub video_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_verified: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowsePage {
     pub items: Vec<MediaItem>,
     pub next_cursor: Option<String>,
     pub collection: Option<CollectionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<ChannelProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +142,8 @@ pub struct AppSettings {
     pub playback_rate: f64,
     #[serde(default)]
     pub always_audio_only: bool,
+    #[serde(default)]
+    pub remember_playback_mode: bool,
     #[serde(default = "crate::normalization::enabled_by_default")]
     pub normalize_audio: bool,
     #[serde(default)]
@@ -108,9 +152,20 @@ pub struct AppSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SubtitleTrack {
+    pub id: String,
+    pub label: String,
+    pub language: String,
+    pub automatic: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlayerState {
     pub status: String,
     pub video: Option<MediaItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storyboard: Option<Storyboard>,
     pub position: f64,
     pub duration: f64,
     pub volume: f64,
@@ -121,15 +176,20 @@ pub struct PlayerState {
     pub error: Option<String>,
     pub load_id: u64,
     pub playback_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_playback_mode: Option<String>,
     pub requested_quality: u32,
     pub buffered_seconds: f64,
     pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle_track_id: Option<String>,
 }
 impl Default for PlayerState {
     fn default() -> Self {
         Self {
             status: "idle".into(),
             video: None,
+            storyboard: None,
             position: 0.,
             duration: 0.,
             volume: 80.,
@@ -140,9 +200,11 @@ impl Default for PlayerState {
             error: None,
             load_id: 0,
             playback_mode: "video".into(),
+            preferred_playback_mode: None,
             requested_quality: 1080,
             buffered_seconds: 0.,
             error_code: None,
+            subtitle_track_id: None,
         }
     }
 }

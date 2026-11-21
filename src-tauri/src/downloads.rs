@@ -447,6 +447,9 @@ impl DownloadManager {
                 if let Some(heatmap) = crate::youtube::replay_heatmap(&info) {
                     task.video.heatmap = Some(heatmap);
                 }
+                if let Some(chapters) = crate::youtube::video_chapters(&info) {
+                    task.video.chapters = Some(chapters);
+                }
             }
             if task.mode == "video" {
                 if let Some(height) = info["height"]

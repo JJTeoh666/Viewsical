@@ -429,6 +429,7 @@ impl MediaCache {
                 .unwrap_or_default(),
             session_generation: generation,
             video: selected.video.clone(),
+            storyboard: None,
             mode: mode.into(),
             protocol: "cache".into(),
             format_id: "internal-cache".into(),

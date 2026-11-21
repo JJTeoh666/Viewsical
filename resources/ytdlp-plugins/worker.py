@@ -2,6 +2,9 @@
 
 import contextlib
 import json
+import os
+from pathlib import Path
+import runpy
 import sys
 
 import yt_dlp
@@ -32,14 +35,27 @@ def extract(arguments):
     params["logger"] = log
     try:
         with yt_dlp.YoutubeDL(params) as downloader:
-            return {"result": downloader.sanitize_info(downloader.extract_info(urls[0], download=False))}
+            # Simulated processing collects every comma-separated selection in
+            # requested_downloads, without downloading any of those streams.
+            collect_selections = "--simulate" in arguments and params.get("simulate") is True
+            result = downloader.extract_info(urls[0], download=collect_selections)
+            return {"result": downloader.sanitize_info(result)}
     except yt_dlp.utils.DownloadError:
         return {"provider_error": log.errors}
 
 
 def main():
     protocol = sys.stdout
-    with contextlib.redirect_stdout(sys.stderr):
+    with contextlib.redirect_stdout(sys.stderr), contextlib.ExitStack() as cleanup:
+        experiment = os.environ.get("VIEWSICAL_EXPERIMENTAL_PERSISTENT_SOLVER", "1") == "1"
+        timings = os.environ.get("VIEWSICAL_SOLVER_TIMINGS_FILE")
+        if experiment or timings:
+            try:
+                adapter = runpy.run_path(str(Path(__file__).with_name("persistent_solver.py")))
+                cleanup.enter_context(adapter["activate"](experiment, timings))
+            except (OSError, ImportError, KeyError):
+                # The bundled provider is the compatibility path.
+                pass
         print('{"ready":1}', file=protocol, flush=True)
         for line in sys.stdin:
             request = json.loads(line)

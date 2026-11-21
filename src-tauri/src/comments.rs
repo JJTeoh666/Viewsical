@@ -2,22 +2,28 @@
 //! hidden behind the bundled adapter; cursors contain stable comment identity,
 //! never session secrets or provider request URLs.
 use crate::{
+    downloads::{hide_command, ProcessJob},
     models::{AppError, AppResult},
     youtube::{ensure_generation, normalize_video_ref},
     AppState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::{collections::HashSet, process::Stdio, time::Duration};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const PAGE_SIZE: usize = 20;
 const MAX_COMMENTS: usize = 300;
+const MAX_COMMENT_CHARS: usize = 20_000;
+const MAX_TRANSLATION_BYTES: usize = 160_000;
+static TRANSLATION_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoComment {
     pub id: String,
     pub author: String,
+    pub author_channel_id: Option<String>,
     pub author_thumbnail: Option<String>,
     pub text: String,
     pub like_count: Option<u64>,
@@ -137,7 +143,7 @@ fn comment_from_json(value: &Value) -> Option<VideoComment> {
     if !valid_comment_id(id) {
         return None;
     }
-    let text = bounded_text(value.get("text")?.as_str()?, 20_000);
+    let text = bounded_text(value.get("text")?.as_str()?, MAX_COMMENT_CHARS);
     if text.trim().is_empty() {
         return None;
     }
@@ -151,6 +157,11 @@ fn comment_from_json(value: &Value) -> Option<VideoComment> {
                 .unwrap_or("YouTube user"),
             256,
         ),
+        author_channel_id: value
+            .get("author_id")
+            .and_then(Value::as_str)
+            .filter(|id| crate::youtube::valid_channel_id(id))
+            .map(str::to_owned),
         author_thumbnail: value
             .get("author_thumbnail")
             .and_then(Value::as_str)
@@ -304,6 +315,90 @@ pub fn cancel_comments(state: tauri::State<'_, AppState>, request_id: String) {
     }
 }
 
+fn translation_failed() -> AppError {
+    AppError::new(
+        "comment_translation",
+        "Translation is unavailable. Try again.",
+    )
+}
+
+#[tauri::command]
+pub async fn translate_comment(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    generation: u64,
+    text: String,
+) -> AppResult<String> {
+    ensure_generation(generation, state.sessions.snapshot().generation)?;
+    if text.len() > MAX_COMMENT_CHARS * 4
+        || text.chars().count() > MAX_COMMENT_CHARS
+        || text.trim().is_empty()
+    {
+        return Err(AppError::new(
+            "invalid_comment",
+            "Choose a comment to translate.",
+        ));
+    }
+    let _slot = TRANSLATION_SLOTS.try_acquire().map_err(|_| {
+        AppError::new(
+            "translation_busy",
+            "Other translations are running. Try again shortly.",
+        )
+    })?;
+    let translation = tokio::time::timeout(Duration::from_secs(12), async {
+        let mut command = state.tools.youtube_python()?;
+        command
+            .arg(
+                state
+                    .tools
+                    .youtube_plugins(&app)?
+                    .join("comment_translate.py"),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        hide_command(&mut command);
+        let mut child = command.spawn().map_err(|_| translation_failed())?;
+        let _job = ProcessJob::attach(&child)?;
+        let mut input = child.stdin.take().ok_or_else(translation_failed)?;
+        input
+            .write_all(text.as_bytes())
+            .await
+            .map_err(|_| translation_failed())?;
+        drop(input);
+        let mut output = child
+            .stdout
+            .take()
+            .ok_or_else(translation_failed)?
+            .take((MAX_TRANSLATION_BYTES + 1) as u64);
+        let mut bytes = Vec::new();
+        output
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|_| translation_failed())?;
+        if bytes.len() > MAX_TRANSLATION_BYTES
+            || !child
+                .wait()
+                .await
+                .map_err(|_| translation_failed())?
+                .success()
+        {
+            return Err(translation_failed());
+        }
+        let translated = String::from_utf8(bytes).map_err(|_| translation_failed())?;
+        let translated = bounded_text(&translated, MAX_TRANSLATION_BYTES);
+        if translated.trim().is_empty() {
+            return Err(translation_failed());
+        }
+        Ok(translated)
+    })
+    .await
+    .map_err(|_| translation_failed())??;
+    ensure_generation(generation, state.sessions.snapshot().generation)?;
+    Ok(translation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,11 +465,15 @@ mod tests {
         rows.push(json!({"id":"reply","parent":"comment-0","text":"Reply"}));
         rows[0]["author_thumbnail"] = json!("https://googleusercontent.com.attacker.test/x");
         rows[1]["author_thumbnail"] = json!("https://yt3.ggpht.com/avatar");
+        rows[0]["author_id"] = json!("https://example.com/channel/other");
+        rows[1]["author_id"] = json!("UC1234567890123456789012");
         rows[1]["is_pinned"] = json!(true);
         let page = page_from_json(&value, VIDEO, "top", 1, None).unwrap();
         assert_eq!(page.items.len(), 2);
         assert!(page.items[0].author_thumbnail.is_none());
         assert!(page.items[1].author_thumbnail.is_some());
+        assert!(page.items[0].author_channel_id.is_none());
+        assert_eq!(page.items[1].author_channel_id.as_deref(), Some("UC1234567890123456789012"));
         assert!(page.items[1].is_pinned);
         assert_eq!(page.items[0].reply_count, None);
     }

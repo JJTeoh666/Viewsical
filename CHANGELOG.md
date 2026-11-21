@@ -1,5 +1,35 @@
 # Changelog
 
+## Viewsical 0.1.15 — 21 November 2026
+
+- Open channel profiles from the uploader and recommendation channel links. Show the uploader's avatar, subscriber count, and Subscribe button on the watch page.
+- Save the playing video to a new or existing local playlist, or to an editable YouTube playlist when signed in.
+- Show Download as an icon and add Load more to the watch sidebar.
+
+## Viewsical 0.1.14 — 21 November 2026
+
+- Show upload date, views, and an expandable description. Add signed-in video ratings and share links with an optional playback timestamp.
+- Import public and unlisted YouTube playlists into the local library. Show recommendations beside playlist playback.
+- Translate comments to English, seek using comment timestamps, and open a commenter's channel from their name or avatar.
+- Add channel banners, larger avatars, and Home, Videos, Live, and Playlists tabs. Connected accounts can subscribe and unsubscribe.
+- Add selectable YouTube subtitle tracks and restore seek thumbnails for cached videos.
+
+## Viewsical 0.1.13 — 21 November 2026
+
+- Fix a playback startup race that could leave the loading overlay visible after switching renderers.
+- Add a cat seek thumb that winks and scales up five percent on hover or drag. Show the current video resolution beside playback settings.
+- Brighten the seek bar up to the pointer and remove the vertical hover marker.
+- Fill in missing chapter divisions during playback of older cached or downloaded audio when chapter data is available.
+
+## Viewsical 0.1.12 — 20 November 2026
+
+- Resolve HLS and HTTPS video sources together. Try a valid alternate from the same response if the first source fails.
+- Reuse a pending lookup when playing the prefetched queue item. Switch between available qualities using fresh streams already in memory.
+- Keep the Deno solver ready to reuse prepared functions across videos that share a YouTube player version. Fall back to the bundled one-shot solver when needed.
+- Show chapter divisions on the seek bar and video thumbnails while hovering. Audio-only playback shows chapter and time labels.
+- Keep the Windows display awake during active video playback. Add **Remember playback mode** in Playback settings.
+- Keep the final queued video loaded on its last frame so seeking and replay can reuse the source.
+
 ## Viewsical 0.1.11 — 19 November 2026
 
 - Add a rounded Windows and app icon.

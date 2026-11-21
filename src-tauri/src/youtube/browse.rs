@@ -1,6 +1,6 @@
 //! Read-only library/comment extraction, pagination, and account validation.
 use super::{
-    canonical_video, ensure_generation,
+    canonical_video, channel, ensure_generation,
     gateway::YoutubeGateway,
     identity::{playlist_target, safe_youtube_url, valid_playlist_id, valid_video_id},
     media_item,
@@ -131,6 +131,7 @@ impl YoutubeGateway {
         }
         let offset = decode_cursor(cursor, kind, query, generation)?;
         let target = browse_target(kind, query, offset + PAGE_SIZE + 1)?;
+        let channel_tab = channel::tab_name(kind);
         let mut extra = vec![
             "--flat-playlist".into(),
             "--playlist-items".into(),
@@ -139,8 +140,11 @@ impl YoutubeGateway {
         if kind == "search" && normalize_video_ref(query).is_ok() && !target.contains("list=") {
             extra.push("--no-playlist".into());
         }
+        if channel_tab.is_some() {
+            extra.extend(["--extractor-args".into(), "youtubetab:viewsical_profile=1".into()]);
+        }
         let request = self.begin(request_id);
-        let public = matches!(kind, "search" | "channel");
+        let public = kind == "search" || channel_tab.is_some();
         let cookies = if public {
             None
         } else {
@@ -181,11 +185,14 @@ impl YoutubeGateway {
             }
             result => result,
         };
-        let json=result.map_err(|error| {
-            if target.contains("list=RD") && matches!(error.code.as_str(),"extraction_failed"|"unsupported_library") {
-                AppError::new("mix_context", "This Mix needs its original watch link. Paste a YouTube link containing both v= and list= to open it.")
-            } else { error }
-        })?;
+        let json = match result {
+            Err(error) if channel_tab.is_some() && error.code == "channel_tab_missing" => Value::Null,
+            Err(error) if target.contains("list=RD")
+                && matches!(error.code.as_str(), "extraction_failed" | "unsupported_library") => {
+                return Err(AppError::new("mix_context", "This Mix needs its original watch link. Paste a YouTube link containing both v= and list= to open it."));
+            }
+            result => result?,
+        };
         let entries = json.get("entries").and_then(Value::as_array);
         let has_more = entries.is_some_and(|e| e.len() > PAGE_SIZE)
             || (kind == "playlist"
@@ -200,6 +207,9 @@ impl YoutubeGateway {
                 .enumerate()
                 .filter_map(|(index, value)| {
                     let mut item = media_item(value)?;
+                    if !includes_item(kind, &item) {
+                        return None;
+                    }
                     if kind == "playlist" {
                         item.playlist_index =
                             Some(item.playlist_index.unwrap_or((offset + index + 1) as u64));
@@ -208,24 +218,69 @@ impl YoutubeGateway {
                 })
                 .collect()
         } else {
-            media_item(&json).into_iter().collect()
+            media_item(&json).into_iter().filter(|item| includes_item(kind, item)).collect()
         };
         items.truncate(PAGE_SIZE);
-        let collection = if matches!(kind, "playlist" | "channel") {
+        let collection = if !json.is_null() && (kind == "playlist" || channel_tab.is_some()) {
             Some(collection_summary(&json, &target, &items))
         } else {
             None
         };
+        let mut profile = channel_tab.and_then(|_| channel::profile(&json));
+        if kind == "channel-home" {
+            let mut seen = std::collections::HashSet::new();
+            items.retain(|item| seen.insert(item.id.clone()));
+            if items.is_empty() {
+                let uploads_url = channel::tab_url(query.trim(), "videos")?;
+                let uploads = self.run(
+                    app,
+                    &uploads_url,
+                    vec![
+                        "--flat-playlist".into(),
+                        "--playlist-items".into(),
+                        "1:12".into(),
+                        "--extractor-args".into(),
+                        "youtubetab:viewsical_profile=1".into(),
+                    ],
+                    None,
+                    generation,
+                    request.token.clone(),
+                ).await;
+                match uploads {
+                    Ok(uploads) => {
+                        if profile.is_none() {
+                            profile = channel::profile(&uploads);
+                        }
+                        if let Some(entries) = uploads["entries"].as_array() {
+                            items = entries.iter().filter_map(media_item)
+                                .filter(|item| item.kind == "video").collect();
+                        }
+                    }
+                    Err(error) if error.code == "channel_tab_missing" => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         Ok(BrowsePage {
             items,
             collection,
-            next_cursor: has_more
+            channel: profile,
+            next_cursor: (has_more && kind != "channel-home")
                 .then(|| encode_cursor(offset + PAGE_SIZE, kind, query, generation)),
         })
     }
 }
 
-fn collection_summary(json: &Value, target: &str, items: &[MediaItem]) -> CollectionSummary {
+fn includes_item(kind: &str, item: &MediaItem) -> bool {
+    match kind {
+        "channel" | "channel-live" => item.kind == "video",
+        "channel-playlists" => item.kind == "playlist",
+        "channel-home" => matches!(item.kind.as_str(), "video" | "playlist"),
+        _ => true,
+    }
+}
+
+pub(super) fn collection_summary(json: &Value, target: &str, items: &[MediaItem]) -> CollectionSummary {
     let id = text(json, "id");
     let thumbnail = json
         .get("thumbnails")
@@ -263,6 +318,9 @@ fn collection_summary(json: &Value, target: &str, items: &[MediaItem]) -> Collec
 
 pub(super) fn browse_target(kind: &str, query: &str, search_count: usize) -> AppResult<String> {
     let query = query.trim();
+    if let Some(tab) = channel::tab_name(kind) {
+        return channel::tab_url(query, tab);
+    }
     match kind {
         "home" => Ok("https://www.youtube.com/".into()),
         "subscriptions" => Ok(":ytsubs".into()),
@@ -316,37 +374,6 @@ pub(super) fn browse_target(kind: &str, query: &str, search_count: usize) -> App
                     })?
             };
             playlist_target(&id, Some(query))
-        }
-        "channel" => {
-            let url = if query.starts_with("UC")
-                && query.len() == 24
-                && query
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
-            {
-                format!("https://www.youtube.com/channel/{query}")
-            } else if query.starts_with('@') && !query.contains(['/', '?', '#', ' ']) {
-                format!("https://www.youtube.com/{query}")
-            } else {
-                safe_youtube_url(query)?.to_string()
-            };
-            let mut parsed = safe_youtube_url(&url)?;
-            let path = parsed.path().trim_end_matches('/');
-            let parts: Vec<_> = path.trim_start_matches('/').split('/').collect();
-            let base = if parts.first().is_some_and(|s| s.starts_with('@')) {
-                format!("/{}", parts[0])
-            } else if parts.len() >= 2 && matches!(parts[0], "channel" | "user" | "c") {
-                format!("/{}/{}", parts[0], parts[1])
-            } else {
-                return Err(AppError::new(
-                    "invalid_input",
-                    "Choose a valid YouTube channel.",
-                ));
-            };
-            parsed.set_path(&format!("{base}/videos"));
-            parsed.set_query(None);
-            parsed.set_fragment(None);
-            Ok(parsed.to_string())
         }
         _ => Err(AppError::new(
             "invalid_input",

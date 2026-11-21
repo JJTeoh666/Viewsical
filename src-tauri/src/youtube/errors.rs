@@ -43,6 +43,11 @@ pub fn classify_error(stderr: &str) -> AppError {
             "unavailable",
             "This video or library is unavailable to the current session or region.",
         )
+    } else if ["featured", "videos", "streams", "playlists"]
+        .iter()
+        .any(|tab| lower.contains(&format!("this channel does not have a {tab} tab")))
+    {
+        ("channel_tab_missing", "This channel does not have this section.")
     } else if lower.contains("unsupported url") {
         ("unsupported_library", "This YouTube library is not supported by the installed engine. Update the engine or try a direct playlist link.")
     } else if lower.contains("timed out")

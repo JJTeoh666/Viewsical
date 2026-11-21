@@ -43,6 +43,8 @@ impl AppPaths {
             let name = entry.file_name().to_string_lossy().to_string();
             if (name.starts_with("cookies-") && name.ends_with(".txt"))
                 || (name.starts_with("session-") && name.ends_with(".cookies"))
+                || name.strip_prefix("subtitles-").and_then(|name| name.strip_suffix(".vtt"))
+                    .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
             {
                 let _ = std::fs::remove_file(entry.path());
             }

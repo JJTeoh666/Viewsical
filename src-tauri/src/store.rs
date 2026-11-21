@@ -2,7 +2,7 @@ use crate::{
     models::*,
     runtime::{now, AppPaths},
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
@@ -19,6 +19,12 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(AppError::io)?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS local_history (video_id TEXT NOT NULL, partition TEXT NOT NULL, json TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(video_id,partition)); CREATE TABLE IF NOT EXISTS downloads (id TEXT PRIMARY KEY, json TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS ui_state (key TEXT PRIMARY KEY, value INTEGER NOT NULL CHECK(value IN (0,1)));").map_err(AppError::io)?;
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS local_playlists (
+                id TEXT PRIMARY KEY, summary TEXT NOT NULL, videos TEXT NOT NULL, imported_at INTEGER NOT NULL
+            );",
+        )
+        .map_err(AppError::io)?;
         let version: u32 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(AppError::io)?;
@@ -42,6 +48,7 @@ impl Store {
                 muted: false,
                 playback_rate: 1.,
                 always_audio_only: false,
+                remember_playback_mode: false,
                 normalize_audio: true,
                 close_to_tray: false,
             },
@@ -49,6 +56,77 @@ impl Store {
     }
     pub fn settings(&self) -> AppResult<AppSettings> {
         let db = self.db.lock().map_err(AppError::io)?;
+        self.read_settings(&db)
+    }
+    pub fn local_playlists(&self) -> AppResult<Vec<CollectionSummary>> {
+        let db = self.db.lock().map_err(AppError::io)?;
+        let mut query = db
+            .prepare("SELECT summary FROM local_playlists ORDER BY imported_at DESC, id")
+            .map_err(AppError::io)?;
+        let rows = query.query_map([], |row| row.get::<_, String>(0)).map_err(AppError::io)?;
+        rows.map(|row| serde_json::from_str(&row.map_err(AppError::io)?).map_err(AppError::io)).collect()
+    }
+    pub fn local_playlist(&self, id: &str) -> AppResult<BrowsePage> {
+        let db = self.db.lock().map_err(AppError::io)?;
+        Self::read_local_playlist(&db, id)
+    }
+    fn read_local_playlist(db: &Connection, id: &str) -> AppResult<BrowsePage> {
+        let row = db.query_row(
+            "SELECT summary, videos FROM local_playlists WHERE id=?1",
+            [id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        ).optional().map_err(AppError::io)?;
+        let (summary, videos) = row.ok_or_else(|| AppError::new(
+            "playlist_missing", "This playlist is no longer in your local library."
+        ))?;
+        Ok(BrowsePage {
+            collection: Some(serde_json::from_str(&summary).map_err(AppError::io)?),
+            items: serde_json::from_str(&videos).map_err(AppError::io)?,
+            next_cursor: None,
+            channel: None,
+        })
+    }
+    pub fn save_local_playlist(&self, summary: &CollectionSummary, items: &[MediaItem]) -> AppResult<()> {
+        let db = self.db.lock().map_err(AppError::io)?;
+        Self::write_local_playlist(&db, summary, items)
+    }
+    fn write_local_playlist(db: &Connection, summary: &CollectionSummary, items: &[MediaItem]) -> AppResult<()> {
+        let summary_json = serde_json::to_string(summary).map_err(AppError::io)?;
+        let videos_json = serde_json::to_string(items).map_err(AppError::io)?;
+        db.execute(
+            "INSERT INTO local_playlists(id, summary, videos, imported_at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET summary=excluded.summary, videos=excluded.videos, imported_at=excluded.imported_at",
+            params![summary.id, summary_json, videos_json, now()],
+        ).map_err(AppError::io)?;
+        Ok(())
+    }
+    pub fn append_local_playlist_video(&self, id: &str, mut item: MediaItem) -> AppResult<()> {
+        let mut db = self.db.lock().map_err(AppError::io)?;
+        let transaction = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(AppError::io)?;
+        let page = Self::read_local_playlist(&transaction, id)?;
+        let mut items = page.items;
+        if items.iter().any(|saved| saved.id == item.id) {
+            return Ok(());
+        }
+        if items.len() >= crate::youtube::local_playlists::MAX_PLAYLIST_ITEMS {
+            return Err(AppError::new("playlist_too_large", "This playlist already has 5,000 videos."));
+        }
+        let mut summary = page.collection.ok_or_else(|| AppError::new("playlist_missing", "This playlist is no longer in your local library."))?;
+        item.playlist_index = Some(items.iter().filter_map(|saved| saved.playlist_index)
+            .max().unwrap_or_default().max(items.len() as u64).saturating_add(1));
+        items.push(item);
+        summary.item_count = Some(items.len() as u64);
+        Self::write_local_playlist(&transaction, &summary, &items)?;
+        transaction.commit().map_err(AppError::io)?;
+        Ok(())
+    }
+    pub fn remove_local_playlist(&self, id: &str) -> AppResult<()> {
+        self.db.lock().map_err(AppError::io)?
+            .execute("DELETE FROM local_playlists WHERE id=?1", [id])
+            .map_err(AppError::io)?;
+        Ok(())
+    }
+    fn read_settings(&self, db: &Connection) -> AppResult<AppSettings> {
         let json = db.query_row("SELECT json FROM settings WHERE id=1", [], |r| {
             r.get::<_, String>(0)
         });
@@ -58,10 +136,32 @@ impl Store {
             Err(e) => Err(AppError::io(e)),
         }
     }
-    pub fn save_settings(&self, settings: &AppSettings) -> AppResult<()> {
+    pub fn save_settings(&self, settings: &AppSettings, initial_mode: Option<&str>) -> AppResult<()> {
+        let mut db = self.db.lock().map_err(AppError::io)?;
+        let transaction = db.transaction().map_err(AppError::io)?;
+        write_settings(&transaction, settings)?;
+        if let Some(mode) = initial_mode {
+            write_preferred_playback_mode(&transaction, mode)?;
+        }
+        transaction.commit().map_err(AppError::io)
+    }
+    pub fn preferred_playback_mode(&self) -> AppResult<Option<&'static str>> {
         let db = self.db.lock().map_err(AppError::io)?;
-        db.execute("INSERT INTO settings(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", [serde_json::to_string(settings).map_err(AppError::io)?]).map_err(AppError::io)?;
-        Ok(())
+        db.query_row("SELECT value FROM ui_state WHERE key='playback.audio_only'", [], |row| {
+            Ok(if row.get::<_, bool>(0)? { "audio" } else { "video" })
+        }).optional().map_err(AppError::io)
+    }
+    pub fn save_preferred_playback_mode(&self, mode: &str) -> AppResult<()> {
+        let db = self.db.lock().map_err(AppError::io)?;
+        write_preferred_playback_mode(&db, mode)
+    }
+    pub fn update_playback_controls(&self, volume: f64, muted: bool, speed: f64) -> AppResult<()> {
+        let db = self.db.lock().map_err(AppError::io)?;
+        let mut settings = self.read_settings(&db)?;
+        settings.volume = volume;
+        settings.muted = muted;
+        settings.playback_rate = speed;
+        write_settings(&db, &settings)
     }
     /// Native window state is separate from frontend settings and account data.
     /// A stale settings snapshot must never undo a recent maximize/restore.
@@ -151,9 +251,71 @@ impl Store {
     }
 }
 
+fn write_settings(db: &Connection, settings: &AppSettings) -> AppResult<()> {
+    db.execute("INSERT INTO settings(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", [serde_json::to_string(settings).map_err(AppError::io)?]).map_err(AppError::io)?;
+    Ok(())
+}
+
+fn write_preferred_playback_mode(db: &Connection, mode: &str) -> AppResult<()> {
+    db.execute(
+        "INSERT INTO ui_state(key,value) VALUES('playback.audio_only',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [mode == "audio"],
+    ).map_err(AppError::io)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_playlists_survive_reopening_and_reimport_replaces_the_snapshot() {
+        let dir = std::env::temp_dir().join(format!("viewsical-local-playlist-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = AppPaths {
+            data: dir.clone(),
+            auth: dir.join("auth"),
+            temp: dir.join("tmp"),
+            downloads: dir.join("downloads"),
+        };
+        let summary = CollectionSummary {
+            id: "PLtest".into(),
+            title: "Saved playlist".into(),
+            owner: "Owner".into(),
+            thumbnail: None,
+            item_count: Some(1),
+            description: None,
+            is_mix: false,
+            url: "https://www.youtube.com/playlist?list=PLtest".into(),
+        };
+        {
+            let store = Store::new(&paths).unwrap();
+            let mut item = MediaItem { id: "jNQXAC9IVRw".into(), ..Default::default() };
+            store.save_local_playlist(&summary, std::slice::from_ref(&item)).unwrap();
+            item.id = "dQw4w9WgXcQ".into();
+            item.playlist_index = Some(4);
+            store.save_local_playlist(&summary, &[item]).unwrap();
+            let appended = MediaItem { id: "jNQXAC9IVRw".into(), ..Default::default() };
+            store.append_local_playlist_video(&summary.id, appended.clone()).unwrap();
+            store.append_local_playlist_video(&summary.id, appended).unwrap();
+        }
+        {
+            let store = Store::new(&paths).unwrap();
+            store.set_account_partition(true);
+            assert_eq!(store.local_playlists().unwrap().len(), 1);
+            let saved = store.local_playlist(&summary.id).unwrap();
+            let collection = saved.collection.unwrap();
+            assert_eq!(collection.title, summary.title);
+            assert_eq!(collection.item_count, Some(2));
+            assert_eq!(saved.items.len(), 2);
+            assert_eq!(saved.items[0].id, "dQw4w9WgXcQ");
+            assert_eq!(saved.items[1].id, "jNQXAC9IVRw");
+            assert_eq!(saved.items[1].playlist_index, Some(5));
+            store.remove_local_playlist(&summary.id).unwrap();
+            assert!(store.local_playlists().unwrap().is_empty());
+            assert_eq!(store.local_playlist(&summary.id).unwrap_err().code, "playlist_missing");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
     #[test]
     fn maximized_state_survives_reopening_and_stale_settings_saves() {
         let dir =
@@ -170,7 +332,7 @@ mod tests {
             assert!(!store.window_maximized().unwrap());
             let stale = store.settings().unwrap();
             store.save_window_maximized(true).unwrap();
-            store.save_settings(&stale).unwrap();
+            store.save_settings(&stale, None).unwrap();
             store.set_account_partition(true);
             store.clear_private_history().unwrap();
             assert!(store.window_maximized().unwrap());
@@ -191,12 +353,44 @@ mod tests {
         let legacy = r#"{"theme":"dark","downloadDirectory":"C:\\Downloads","defaultQuality":720,"volume":37.0,"muted":true,"playbackRate":1.25}"#;
         let settings: AppSettings = serde_json::from_str(legacy).unwrap();
         assert!(!settings.always_audio_only);
+        assert!(!settings.remember_playback_mode);
         assert!(!settings.close_to_tray);
         assert!(settings.normalize_audio);
         assert_eq!(settings.theme, "dark");
         assert_eq!(settings.volume, 37.);
         assert!(settings.muted);
         assert_eq!(settings.default_quality, 720);
+    }
+    #[test]
+    fn remembered_mode_survives_reopening_and_other_setting_changes() {
+        let dir = std::env::temp_dir().join(format!("viewsical-playback-mode-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = AppPaths {
+            data: dir.clone(),
+            auth: dir.join("auth"),
+            temp: dir.join("tmp"),
+            downloads: dir.join("downloads"),
+        };
+        {
+            let store = Store::new(&paths).unwrap();
+            assert_eq!(store.preferred_playback_mode().unwrap(), None);
+            let mut settings = store.settings().unwrap();
+            settings.remember_playback_mode = true;
+            store.save_settings(&settings, Some("video")).unwrap();
+            store.save_preferred_playback_mode("audio").unwrap();
+            store.save_settings(&settings, None).unwrap();
+            store.update_playback_controls(53., true, 1.25).unwrap();
+        }
+        {
+            let store = Store::new(&paths).unwrap();
+            assert_eq!(store.preferred_playback_mode().unwrap(), Some("audio"));
+            let settings = store.settings().unwrap();
+            assert!(settings.remember_playback_mode);
+            assert_eq!((settings.volume, settings.muted, settings.playback_rate), (53., true, 1.25));
+            store.save_preferred_playback_mode("video").unwrap();
+        }
+        assert_eq!(Store::new(&paths).unwrap().preferred_playback_mode().unwrap(), Some("video"));
+        let _ = std::fs::remove_dir_all(dir);
     }
     #[test]
     fn history_and_settings_survive_reopening() {
@@ -214,7 +408,7 @@ mod tests {
             settings.theme = "dark".into();
             settings.always_audio_only = true;
             settings.normalize_audio = false;
-            store.save_settings(&settings).unwrap();
+            store.save_settings(&settings, None).unwrap();
             let video = MediaItem {
                 id: "BaW_jenozKc".into(),
                 title: "Test".into(),

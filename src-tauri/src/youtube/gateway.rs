@@ -1,5 +1,8 @@
 //! Adapter state, request ownership, cancellation, and shutdown.
-use super::playback::PlaybackPlan;
+use super::{
+    pending::PendingPrefetches, playback::SourceCache, subtitles::CaptionCache,
+    timeline::TimelineCache, watch::WatchCache,
+};
 use crate::{runtime::ToolPaths, session::SessionManager};
 use std::{
     collections::HashMap,
@@ -35,9 +38,15 @@ pub struct YoutubeGateway {
     pub(super) sessions: Arc<SessionManager>,
     active: Active,
     pub(super) closing: AtomicBool,
-    pub(super) sources: Mutex<HashMap<String, PlaybackPlan>>,
+    pub(super) sources: Mutex<SourceCache>,
+    pub(super) timelines: Mutex<TimelineCache>,
+    pub(super) captions: Mutex<CaptionCache>,
+    pub(super) watch_metadata_lookup: tokio::sync::Mutex<()>,
+    pub(super) watch_details: Mutex<WatchCache>,
+    pub(super) account_operation: tokio::sync::Mutex<()>,
     pub(super) resolving: tokio::sync::Mutex<()>,
     pub(super) prefetching: tokio::sync::Mutex<()>,
+    pub(super) pending_prefetches: PendingPrefetches,
     pub(super) worker: tokio::sync::Mutex<Option<super::process::PlaybackWorker>>,
 }
 impl YoutubeGateway {
@@ -47,9 +56,15 @@ impl YoutubeGateway {
             sessions,
             active: Arc::new(Mutex::new(HashMap::new())),
             closing: AtomicBool::new(false),
-            sources: Mutex::new(HashMap::new()),
+            sources: Mutex::default(),
+            timelines: Mutex::default(),
+            captions: Mutex::default(),
+            watch_metadata_lookup: tokio::sync::Mutex::new(()),
+            watch_details: Mutex::default(),
+            account_operation: tokio::sync::Mutex::new(()),
             resolving: tokio::sync::Mutex::new(()),
             prefetching: tokio::sync::Mutex::new(()),
+            pending_prefetches: PendingPrefetches::default(),
             worker: tokio::sync::Mutex::new(None),
         }
     }
@@ -79,7 +94,20 @@ impl YoutubeGateway {
     }
 
     pub fn cancel_all(&self) {
+        self.pending_prefetches.cancel_all();
         self.sources
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.timelines
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.captions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.watch_details
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clear();
@@ -99,5 +127,11 @@ impl YoutubeGateway {
         {
             token.cancel();
         }
+    }
+
+    pub(crate) fn cancel_playback_requests(&self) {
+        self.cancel("playback-source");
+        self.cancel("playback-watch-metadata");
+        self.cancel("playback-caption-download");
     }
 }

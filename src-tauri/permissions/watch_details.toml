@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-watch-engagement"
+description = "Lets the local main window read video metadata and manage engagement with the current YouTube account."
+commands.allow = ["watch_details", "rate_video", "channel_subscription", "set_channel_subscription", "video_channel", "youtube_playlist_save"]

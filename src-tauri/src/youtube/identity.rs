@@ -98,6 +98,12 @@ pub(super) fn valid_video_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
+pub(crate) fn valid_channel_id(id: &str) -> bool {
+    id.starts_with("UC")
+        && id.len() == 24
+        && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+}
+
 pub(super) fn valid_playlist_id(id: &str) -> bool {
     (2..=128).contains(&id.len())
         && id

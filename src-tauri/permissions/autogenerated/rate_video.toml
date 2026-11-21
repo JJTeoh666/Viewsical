@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-rate-video"
+description = "Enables the rate_video command without any pre-configured scope."
+commands.allow = ["rate_video"]
+
+[[permission]]
+identifier = "deny-rate-video"
+description = "Denies the rate_video command without any pre-configured scope."
+commands.deny = ["rate_video"]

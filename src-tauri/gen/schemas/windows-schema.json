@@ -219,10 +219,22 @@
           "markdownDescription": "Enables the cancel_comments command without any pre-configured scope."
         },
         {
+          "description": "Enables the channel_subscription command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-channel-subscription",
+          "markdownDescription": "Enables the channel_subscription command without any pre-configured scope."
+        },
+        {
           "description": "Enables the clear_history command without any pre-configured scope.",
           "type": "string",
           "const": "allow-clear-history",
           "markdownDescription": "Enables the clear_history command without any pre-configured scope."
+        },
+        {
+          "description": "Allows the main window to request English translations for comments.",
+          "type": "string",
+          "const": "allow-comment-translation",
+          "markdownDescription": "Allows the main window to request English translations for comments."
         },
         {
           "description": "Enables the complete_sign_in command without any pre-configured scope.",
@@ -247,6 +259,30 @@
           "type": "string",
           "const": "allow-enqueue-download",
           "markdownDescription": "Enables the enqueue_download command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the import_local_playlist command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-import-local-playlist",
+          "markdownDescription": "Enables the import_local_playlist command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the local_playlist command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-local-playlist",
+          "markdownDescription": "Enables the local_playlist command without any pre-configured scope."
+        },
+        {
+          "description": "Allows the trusted main window to browse and manage its device-local playlist snapshots.",
+          "type": "string",
+          "const": "allow-local-playlist-library",
+          "markdownDescription": "Allows the trusted main window to browse and manage its device-local playlist snapshots."
+        },
+        {
+          "description": "Enables the local_playlists command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-local-playlists",
+          "markdownDescription": "Enables the local_playlists command without any pre-configured scope."
         },
         {
           "description": "Enables the open_sign_in command without any pre-configured scope.",
@@ -303,10 +339,28 @@
           "markdownDescription": "Enables the player_ui_context command without any pre-configured scope."
         },
         {
+          "description": "Enables the rate_video command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-rate-video",
+          "markdownDescription": "Enables the rate_video command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_local_playlist command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-local-playlist",
+          "markdownDescription": "Enables the remove_local_playlist command without any pre-configured scope."
+        },
+        {
           "description": "Enables the reveal_download command without any pre-configured scope.",
           "type": "string",
           "const": "allow-reveal-download",
           "markdownDescription": "Enables the reveal_download command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_local_playlist_video command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-local-playlist-video",
+          "markdownDescription": "Enables the save_local_playlist_video command without any pre-configured scope."
         },
         {
           "description": "Enables the save_settings command without any pre-configured scope.",
@@ -321,6 +375,12 @@
           "markdownDescription": "Enables the session_state command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_channel_subscription command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-channel-subscription",
+          "markdownDescription": "Enables the set_channel_subscription command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_playback_mode command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-playback-mode",
@@ -333,10 +393,40 @@
           "markdownDescription": "Enables the sign_out command without any pre-configured scope."
         },
         {
+          "description": "Enables the translate_comment command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-translate-comment",
+          "markdownDescription": "Enables the translate_comment command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the video_channel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-video-channel",
+          "markdownDescription": "Enables the video_channel command without any pre-configured scope."
+        },
+        {
           "description": "Enables the video_comments command without any pre-configured scope.",
           "type": "string",
           "const": "allow-video-comments",
           "markdownDescription": "Enables the video_comments command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the watch_details command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-watch-details",
+          "markdownDescription": "Enables the watch_details command without any pre-configured scope."
+        },
+        {
+          "description": "Lets the local main window read video metadata and manage engagement with the current YouTube account.",
+          "type": "string",
+          "const": "allow-watch-engagement",
+          "markdownDescription": "Lets the local main window read video metadata and manage engagement with the current YouTube account."
+        },
+        {
+          "description": "Enables the youtube_playlist_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-youtube-playlist-save",
+          "markdownDescription": "Enables the youtube_playlist_save command without any pre-configured scope."
         },
         {
           "description": "Denies the bootstrap command without any pre-configured scope.",
@@ -381,6 +471,12 @@
           "markdownDescription": "Denies the cancel_comments command without any pre-configured scope."
         },
         {
+          "description": "Denies the channel_subscription command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-channel-subscription",
+          "markdownDescription": "Denies the channel_subscription command without any pre-configured scope."
+        },
+        {
           "description": "Denies the clear_history command without any pre-configured scope.",
           "type": "string",
           "const": "deny-clear-history",
@@ -403,6 +499,24 @@
           "type": "string",
           "const": "deny-enqueue-download",
           "markdownDescription": "Denies the enqueue_download command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the import_local_playlist command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-import-local-playlist",
+          "markdownDescription": "Denies the import_local_playlist command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the local_playlist command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-local-playlist",
+          "markdownDescription": "Denies the local_playlist command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the local_playlists command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-local-playlists",
+          "markdownDescription": "Denies the local_playlists command without any pre-configured scope."
         },
         {
           "description": "Denies the open_sign_in command without any pre-configured scope.",
@@ -453,10 +567,28 @@
           "markdownDescription": "Denies the player_ui_context command without any pre-configured scope."
         },
         {
+          "description": "Denies the rate_video command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-rate-video",
+          "markdownDescription": "Denies the rate_video command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_local_playlist command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-local-playlist",
+          "markdownDescription": "Denies the remove_local_playlist command without any pre-configured scope."
+        },
+        {
           "description": "Denies the reveal_download command without any pre-configured scope.",
           "type": "string",
           "const": "deny-reveal-download",
           "markdownDescription": "Denies the reveal_download command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_local_playlist_video command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-local-playlist-video",
+          "markdownDescription": "Denies the save_local_playlist_video command without any pre-configured scope."
         },
         {
           "description": "Denies the save_settings command without any pre-configured scope.",
@@ -471,6 +603,12 @@
           "markdownDescription": "Denies the session_state command without any pre-configured scope."
         },
         {
+          "description": "Denies the set_channel_subscription command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-channel-subscription",
+          "markdownDescription": "Denies the set_channel_subscription command without any pre-configured scope."
+        },
+        {
           "description": "Denies the set_playback_mode command without any pre-configured scope.",
           "type": "string",
           "const": "deny-set-playback-mode",
@@ -483,10 +621,34 @@
           "markdownDescription": "Denies the sign_out command without any pre-configured scope."
         },
         {
+          "description": "Denies the translate_comment command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-translate-comment",
+          "markdownDescription": "Denies the translate_comment command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the video_channel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-video-channel",
+          "markdownDescription": "Denies the video_channel command without any pre-configured scope."
+        },
+        {
           "description": "Denies the video_comments command without any pre-configured scope.",
           "type": "string",
           "const": "deny-video-comments",
           "markdownDescription": "Denies the video_comments command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the watch_details command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-watch-details",
+          "markdownDescription": "Denies the watch_details command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the youtube_playlist_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-youtube-playlist-save",
+          "markdownDescription": "Denies the youtube_playlist_save command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

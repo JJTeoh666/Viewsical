@@ -1,9 +1,19 @@
 [[permission]]
 identifier = "allow-desktop-commands"
 description = "Allows the trusted local main window to operate TubeDesk. Never assigned to remote sign-in content."
-commands.allow = ["bootstrap", "save_settings", "clear_history", "reveal_download", "open_sign_in", "complete_sign_in", "sign_out", "session_state", "browse", "cancel_browse", "video_comments", "cancel_comments", "cache_summary", "cache_configure", "cache_clear", "set_playback_mode", "player_ui_context", "player_queue_prefetch", "play_video", "play_local", "player_action", "player_bounds", "video_renderer_mode", "video_surface_configure", "video_surface_release", "video_surface_failed", "player_state", "player_overlay_snapshot", "player_overlay_action", "retry_player_overlay", "enqueue_download", "download_action"]
+commands.allow = ["bootstrap", "save_settings", "clear_history", "reveal_download", "open_sign_in", "complete_sign_in", "sign_out", "session_state", "browse", "cancel_browse", "video_comments", "cancel_comments", "cache_summary", "cache_configure", "cache_clear", "set_playback_mode", "player_ui_context", "player_queue_prefetch", "play_video", "play_local", "player_action", "player_bounds", "video_renderer_mode", "video_surface_configure", "video_surface_release", "video_surface_failed", "player_state", "player_overlay_snapshot", "player_overlay_action", "retry_player_overlay", "player_subtitle_tracks", "set_player_subtitle", "enqueue_download", "download_action"]
+
+[[permission]]
+identifier = "allow-local-playlist-library"
+description = "Allows the trusted main window to browse and manage its device-local playlist snapshots."
+commands.allow = ["local_playlists", "local_playlist", "import_local_playlist", "remove_local_playlist", "save_local_playlist_video"]
+
+[[permission]]
+identifier = "allow-comment-translation"
+description = "Allows the main window to request English translations for comments."
+commands.allow = ["translate_comment"]
 
 [[permission]]
 identifier = "allow-player-overlay"
 description = "Allows only the bundled shared player overlay to read presentation state and send scoped playback actions."
-commands.allow = ["player_overlay_snapshot", "player_overlay_action"]
+commands.allow = ["player_overlay_snapshot", "player_overlay_action", "player_subtitle_tracks", "set_player_subtitle"]

@@ -1,4 +1,4 @@
-"""Expose only YouTube's per-video loudness value to Viewsical.
+"""Expose YouTube's loudness, storyboard timing and channel avatar to Viewsical.
 
 Tested with yt-dlp 2026.10.26. Extraction, requests, source selection and
 signature solving remain entirely in yt-dlp. No response, URL or cookie is
@@ -9,6 +9,8 @@ from contextvars import ContextVar
 import math
 
 from yt_dlp.extractor.youtube import YoutubeIE
+from yt_dlp.utils import int_or_none
+from yt_dlp.utils.traversal import get_first, traverse_obj
 
 # The subclass replaces YoutubeIE through yt-dlp's documented plugin hook;
 # it must not also be registered as a separate URL extractor.
@@ -49,6 +51,8 @@ class _ViewsicalYoutubeIE(YoutubeIE, plugin_name="ViewsicalLoudness"):
                 result.pop("viewsical_loudness_db", None)
                 if current["loudness_db"] is not None:
                     result["viewsical_loudness_db"] = current["loudness_db"]
+                if current.get("avatar_channel_id") and current["avatar_channel_id"] == result.get("channel_id"):
+                    result["viewsical_channel_avatar"] = current["avatar_url"]
             return result
         finally:
             _active_extraction.reset(token)
@@ -60,3 +64,34 @@ class _ViewsicalYoutubeIE(YoutubeIE, plugin_name="ViewsicalLoudness"):
             responses = result[0] if isinstance(result, tuple) and result else None
             current["loudness_db"] = _loudness_for_video(responses, video_id)
         return result
+
+    def _download_initial_data(self, video_id, *args, **kwargs):
+        data = super()._download_initial_data(video_id, *args, **kwargs)
+        current = _active_extraction.get()
+        if current is not None and current["video_id"] == video_id:
+            owner = traverse_obj(data, (
+                "contents", "twoColumnWatchNextResults", "results", "results", "contents", ...,
+                "videoSecondaryInfoRenderer", "owner", "videoOwnerRenderer", {dict},
+            ), get_all=False)
+            current["avatar_channel_id"] = traverse_obj(owner, ("navigationEndpoint", "browseEndpoint", "browseId", {str}))
+            current["avatar_url"] = traverse_obj(owner, ("thumbnail", "thumbnails", -1, "url", {str}))
+        return data
+
+    def _extract_storyboard(self, player_responses, duration):
+        spec = get_first(
+            player_responses, ("storyboards", "playerStoryboardSpecRenderer", "spec", {str}),
+            default="",
+        )
+        intervals = {}
+        # The spec gives the sampled frame interval in milliseconds. yt-dlp's
+        # fps is derived from the frame count and includes partially used tiles.
+        for index, entry in enumerate(reversed(spec.split("|")[1:])):
+            parts = entry.split("#")
+            interval = int_or_none(parts[5]) if len(parts) == 8 else None
+            if interval and 0 < interval <= 3_600_000:
+                intervals[f"sb{index}"] = interval / 1000
+        for board in super()._extract_storyboard(player_responses, duration):
+            interval = intervals.get(board["format_id"])
+            if interval is not None:
+                board["viewsical_frame_interval"] = interval
+            yield board
