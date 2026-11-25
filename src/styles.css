@@ -230,6 +230,8 @@ h2 { font-size: 20px; line-height: 1.35; }
 .watch-facts:last-child { margin-bottom: 0; }
 .watch-facts time { color: var(--muted); font-weight: 500; }
 .description-box p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.text-timestamp { display: inline; padding: 0; background: transparent; color: var(--blue); font: inherit; font-weight: 600; }
+.text-timestamp:hover, .text-timestamp:focus-visible { text-decoration: underline; }
 .description-toggle { font-size: 13px; font-weight: 600; padding: 4px 0; margin-top: 3px; background: transparent; }
 .description-toggle:hover { text-decoration: underline; }
 .share-link { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

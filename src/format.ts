@@ -22,9 +22,14 @@ export function errorMessage(error: unknown): string {
   if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') return error.message;
   return 'Something went wrong. Please try again.';
 }
-export function uniqueItems<T extends { id: string }>(items: T[]): T[] {
+export function uniqueItems<T extends { id: string }>(items: T[], key: (item: T) => string = item => item.id): T[] {
   const seen = new Set<string>();
-  return items.filter(item => !seen.has(item.id) && Boolean(seen.add(item.id)));
+  return items.filter(item => {
+    const id = key(item);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }
 export function progressPercent(value: number): number {
   return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;

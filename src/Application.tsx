@@ -4,7 +4,7 @@ import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { AlertCircle, ArrowDownToLine, ArrowLeft, ChevronLeft, ChevronRight, Check, ExternalLink, History, Home, ListVideo, LoaderCircle, LogOut, Menu, Monitor, Play, RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2, UserCircle, Users, Video, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api, isDesktop } from './api';
-import { BrowseCache, browseKey } from './browseCache';
+import { BrowseCache, browseItemKey, browseKey } from './browseCache';
 import { ChannelProfile, channelBrowseKind } from './ChannelProfile';
 import { BackToTop } from './BackToTop';
 import { CommentCache } from './commentCache';
@@ -233,7 +233,7 @@ export default function Application() {
   const moveQueue = useCallback((direction: number, showWatch = false) => {
     const current = queueRef.current; const selected = current.entries[selectedIndex(current)]; const next = current.entries[selectedIndex(current) + direction];
     const pendingPlaylistItem = direction > 0 && current.nextCursor && (!next || (selected?.sourceIndex >= 0 && next.sourceIndex < 0));
-    if (pendingPlaylistItem) { pendingAdvance.current = { queueId: current.id, entryId: current.selectedEntryId }; loadQueuePage(true); setToast('Loading the next videoâ€¦'); }
+    if (pendingPlaylistItem) { pendingAdvance.current = { queueId: current.id, entryId: current.selectedEntryId }; loadQueuePage(true); setToast('Loading the next video…'); }
     else if (next) selectQueue(next, showWatch);
   }, [loadQueuePage, selectQueue]);
   useEffect(() => { if (needsQueuePage(queue)) loadQueuePage(); }, [queue, loadQueuePage]);
@@ -246,13 +246,13 @@ export default function Application() {
     }
   }, [player.status, player.loadId, moveQueue]);
   const action = useCallback((name: PlayerAction, value?: number) => { const request = name === 'adjust-volume' ? api.overlayAction(playerRef.current.loadId, name, value) : api.playerAction(name, value); void request.catch(error => { if (error?.code !== 'cancelled') showError(error); }); }, [showError]);
-  const seekFromComment = useCallback((seconds: number) => {
+  const seekFromTimestamp = useCallback((seconds: number) => {
     const loadId = player.loadId;
     void api.overlayAction(loadId, 'seek', seconds).then(() => {
       if (pageRef.current.kind === 'watch' && playerRef.current.loadId === loadId) window.scrollTo({ top: 0, behavior: 'instant' });
     }).catch(error => { if (error?.code !== 'cancelled') showError(error); });
   }, [player.loadId, showError]);
-  const commentSeekDuration = player.loadId && ['playing', 'paused', 'buffering', 'ended'].includes(player.status) ? player.duration : 0;
+  const timestampDuration = player.loadId && ['playing', 'paused', 'buffering', 'ended'].includes(player.status) ? player.duration : 0;
   const changeMode = useCallback((mode: PlaybackMode) => { void api.setPlaybackMode(mode).catch(showError); }, [showError]);
   const toggleFullscreen = useCallback(() => { if (pageRef.current.kind !== 'watch') navigate({ kind: 'watch' }); const next = !fullscreen; setFullscreen(next); if (isDesktop) void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setFullscreen(next)).catch(showError); }, [fullscreen, navigate, showError]);
   const toggleTheater = useCallback(() => {
@@ -316,7 +316,7 @@ export default function Application() {
       && generation === sessionRef.current.generation && playing === playbackRequest.current;
     const query = item.url || item.id;
     const key = browseKey(generation, 'playlist', query);
-    setStartingPlaylist(item.id);
+    setStartingPlaylist(browseItemKey(item));
     try {
       const first = await cache.firstPage(key, 'playlist', query);
       if (!current()) return;
@@ -392,7 +392,7 @@ export default function Application() {
     if (checkingAccount && accountPages.has(page.kind)) return <Skeletons />;
     if (accountPages.has(page.kind) && !connected) return <EmptyState icon={page.kind === 'playlists' ? ListVideo : Users} title={page.kind === 'playlists' ? 'Your playlists, all together' : 'Keep up with your subscriptions'} action={<button className="sign-in-button" onClick={() => void openSignIn()}><UserCircle size={20} />Sign in to YouTube</button>}>Connect your YouTube account to see {page.kind === 'playlists' ? 'your saved playlists' : 'the channels you follow and their latest videos'}.{['blocked', 'expired'].includes(session.status) && <p className="account-error">{session.message}</p>}</EmptyState>;
     if (initialLoading) return <Skeletons rows={page.kind === 'search' || page.kind === 'playlist'} />;
-    if (entry?.error && !items.length) return <EmptyState icon={AlertCircle} title="Couldnâ€™t load videos" action={<button className="button secondary" onClick={refreshPage}><RefreshCw size={17} />Try again</button>}>{entry.error}</EmptyState>;
+    if (entry?.error && !items.length) return <EmptyState icon={AlertCircle} title="Couldn’t load videos" action={<button className="button secondary" onClick={refreshPage}><RefreshCw size={17} />Try again</button>}>{entry.error}</EmptyState>;
     if (!items.length && page.kind === 'channel') {
       const label = page.channelTab === 'live' ? 'No public live streams'
         : page.channelTab === 'playlists' ? 'No public playlists'
@@ -404,9 +404,10 @@ export default function Application() {
       const playFromCard = item.kind === 'playlist' && (activeKind === 'playlists' || activeKind === 'channel-playlists'
         || (page.kind === 'home' && item.id.startsWith('RD')));
       const openCreator = page.kind === 'home' && (item.kind === 'video' || (item.kind === 'playlist' && item.channelId));
-      return <VideoCard key={item.id} item={item} onActivate={playFromCard ? playPlaylistCard : activate}
+      const cardKey = browseItemKey(item);
+      return <VideoCard key={cardKey} item={item} onActivate={playFromCard ? playPlaylistCard : activate}
         onOpenPlaylist={playFromCard ? openPlaylist : undefined} onOpenChannel={openCreator ? openVideoChannel : undefined}
-        starting={playFromCard && startingPlaylist === item.id} onDownload={setDownloadItem} onQueue={addToQueue} row={page.kind === 'search'} />;
+        starting={playFromCard && startingPlaylist === cardKey} onDownload={setDownloadItem} onQueue={addToQueue} row={page.kind === 'search'} />;
     })}</div>{entry?.nextCursor && <ScrollLoader key={activeKey} scope={activeKey} cursor={entry.nextCursor} loading={entry.loadingMore || entry.loading} error={entry.error} onLoad={() => void cache.loadMore(activeKey).catch(() => {})} />}</>}</>;
   }
   return <div className={`app ${navigationOpen ? '' : 'navigation-collapsed'} ${fullscreen ? 'player-fullscreen' : ''} ${theaterWatch ? 'theater-mode' : ''} ${player.video && mini ? docked ? 'has-bottom-player' : 'has-mini-player' : ''}`}>
@@ -428,11 +429,18 @@ export default function Application() {
       <div className="sidebar-bottom"><button className={`nav-item ${page.kind === 'settings' ? 'active' : ''}`} onClick={() => navigate({ kind: 'settings' })}><Settings size={22} strokeWidth={1.65} /><span>Settings</span></button><p>Viewsical <span>{version}</span><br /><small>Your library stays on this device.</small></p></div>
     </aside>
     <main id="main-content" className={`main-content ${page.kind === 'watch' ? 'watch-content' : ''}`}>
-      {bootError && <div className="banner error-banner" role="alert"><AlertCircle size={20} /><div><strong>Viewsical couldnâ€™t finish starting</strong><p>{bootError}</p></div><button className="button secondary small" onClick={() => void refreshBootstrap()}>Retry</button></div>}
+      {bootError && <div className="banner error-banner" role="alert"><AlertCircle size={20} /><div><strong>Viewsical couldn’t finish starting</strong><p>{bootError}</p></div><button className="button secondary small" onClick={() => void refreshBootstrap()}>Retry</button></div>}
       {missingTools.length > 0 && page.kind !== 'settings' && <div className="banner"><SlidersHorizontal size={20} /><div><strong>Media tools need setup</strong><p>Some playback or download tools are missing.</p></div><button className="button secondary small" onClick={() => navigate({ kind: 'settings' })}>View settings</button></div>}
       <div className={page.kind === 'watch' ? 'watch-layout' : 'page-layout'}><div className={page.kind === 'watch' ? 'watch-main' : 'route-body'}>
         <PlayerHost key="persistent-player" player={player} mini={mini} docked={mini && docked} onDock={() => setDocked(true)} onUndock={() => setDocked(false)} fullscreen={fullscreen} theater={theater} blocked={blocked} hasPrevious={hasPrevious} hasNext={hasNext} focusSignal={focusSignal} onAction={action} onMode={changeMode} onPrevious={() => moveQueue(-1)} onNext={() => moveQueue(1)} onFullscreen={toggleFullscreen} onTheater={toggleTheater} onMinimize={minimizePlayer} onExpand={() => navigate({ kind: 'watch' })} onClose={closePlayer} onRetry={() => { if (player.video) requestPlayback(player.video); }} />
-        {page.kind === 'watch' ? player.video ? <><WatchInfo key={`${player.video.id}:${session.generation}:${session.status}`} video={player.video} session={session} position={player.position} resolving={player.status === 'resolving'} onOpenChannel={openVideoChannel} onSubscriptionChange={refreshSubscriptionLibrary} onSignIn={openSignIn} onSaved={playlistSaved} onDownload={setDownloadItem} /><CommentsPanel videoId={player.video.id} generation={session.generation} cache={commentCache} sort={commentSort} onSort={setCommentSort} duration={commentSeekDuration} onSeek={seekFromComment} onOpenAuthor={(query, title, thumbnail) => navigate({ kind: 'channel', query, title, channelThumbnail: thumbnail })} /></> : <EmptyState icon={Video} title="Nothing is playing yet" action={<button className="button primary" onClick={() => navigate({ kind: 'home' })}>Find a video</button>}>Search for a video or open one from your downloads.</EmptyState> : <div key="browse-content">
+        {page.kind === 'watch' ? player.video ? <>
+          <WatchInfo key={`${player.video.id}:${session.generation}:${session.status}`} video={player.video} session={session}
+            position={player.position} resolving={player.status === 'resolving'} duration={timestampDuration} onSeek={seekFromTimestamp}
+            onOpenChannel={openVideoChannel} onSubscriptionChange={refreshSubscriptionLibrary} onSignIn={openSignIn} onSaved={playlistSaved} onDownload={setDownloadItem} />
+          <CommentsPanel videoId={player.video.id} generation={session.generation} cache={commentCache} sort={commentSort} onSort={setCommentSort}
+            duration={timestampDuration} onSeek={seekFromTimestamp}
+            onOpenAuthor={(query, title, thumbnail) => navigate({ kind: 'channel', query, title, channelThumbnail: thumbnail })} />
+        </> : <EmptyState icon={Video} title="Nothing is playing yet" action={<button className="button primary" onClick={() => navigate({ kind: 'home' })}>Find a video</button>}>Search for a video or open one from your downloads.</EmptyState> : <div key="browse-content">
           {page.kind === 'channel' ? <ChannelProfile key={page.query} channel={entry?.channel ?? cachedChannel} query={page.query}
             fallbackTitle={page.title} fallbackAvatar={page.channelThumbnail} tab={page.channelTab ?? 'home'}
             session={session} onSubscriptionChange={refreshSubscriptionLibrary} onSignIn={openSignIn}
@@ -460,7 +468,7 @@ export default function Application() {
     </main>
     <BackToTop enabled={page.kind === 'home' || page.kind === 'search' || page.kind === 'playlist' || page.kind === 'localPlaylist'} pageKey={activeKey || page.kind} />
     {downloadItem && <DownloadDialog item={downloadItem} settings={settings} player={player} onClose={() => setDownloadItem(null)} onAdded={task => { updateDownload(task); setToast('Download added'); }} onError={showError} />}
-    {signInOpen && <Modal title="Sign in to YouTube" onClose={() => setSignInOpen(false)}><div className="signin-illustration"><UserCircle size={43} strokeWidth={1.4} /><span className="signin-connector" /><span className="brand-mark"><Play size={19} fill="currentColor" strokeWidth={0} /></span></div><p className="modal-intro">Finish signing in in the YouTube window, then return here to connect your account.</p><div className="info-note"><ShieldCheck size={20} /><p>Your session is managed on this computer. Viewsical does not ask for or store your Google password.</p></div><div className="signin-warning"><AlertCircle size={18} /><p>Google may block sign-in in embedded browsers. If that happens, account features will be unavailable. You can still search, play, and download public videos.</p></div>{(signInError || session.status === 'blocked') && <div className="inline-error" role="alert"><AlertCircle size={18} /><span>{signInError || session.message}</span></div>}<button className="text-link reopen-link" disabled={signInBusy} onClick={() => void openSignIn()}><ExternalLink size={16} />Reopen YouTube sign-in</button><div className="modal-footer"><button className="button secondary" onClick={() => setSignInOpen(false)}>Continue without account</button><button className="button primary" disabled={signInBusy} onClick={() => void completeSignIn()}>{signInBusy ? <LoaderCircle size={17} className="spin" /> : <Check size={17} />}{signInBusy ? 'Checkingâ€¦' : 'I have signed in'}</button></div></Modal>}
+    {signInOpen && <Modal title="Sign in to YouTube" onClose={() => setSignInOpen(false)}><div className="signin-illustration"><UserCircle size={43} strokeWidth={1.4} /><span className="signin-connector" /><span className="brand-mark"><Play size={19} fill="currentColor" strokeWidth={0} /></span></div><p className="modal-intro">Finish signing in in the YouTube window, then return here to connect your account.</p><div className="info-note"><ShieldCheck size={20} /><p>Your session is managed on this computer. Viewsical does not ask for or store your Google password.</p></div><div className="signin-warning"><AlertCircle size={18} /><p>Google may block sign-in in embedded browsers. If that happens, account features will be unavailable. You can still search, play, and download public videos.</p></div>{(signInError || session.status === 'blocked') && <div className="inline-error" role="alert"><AlertCircle size={18} /><span>{signInError || session.message}</span></div>}<button className="text-link reopen-link" disabled={signInBusy} onClick={() => void openSignIn()}><ExternalLink size={16} />Reopen YouTube sign-in</button><div className="modal-footer"><button className="button secondary" onClick={() => setSignInOpen(false)}>Continue without account</button><button className="button primary" disabled={signInBusy} onClick={() => void completeSignIn()}>{signInBusy ? <LoaderCircle size={17} className="spin" /> : <Check size={17} />}{signInBusy ? 'Checking…' : 'I have signed in'}</button></div></Modal>}
     {clearConfirm && <Modal title="Clear watch history?" onClose={() => setClearConfirm(false)}><p className="modal-intro">This removes your local watch history from Viewsical. Your downloaded files and YouTube account are unaffected.</p><div className="modal-footer"><button className="button secondary" onClick={() => setClearConfirm(false)}>Keep history</button><button className="button primary" onClick={() => { void api.clearHistory().then(() => { setHistory([]); setClearConfirm(false); setToast('Watch history cleared'); }).catch(showError); }}>Clear history</button></div></Modal>}
     {toast && <div className="toast" role="status"><span>{toast}</span><IconButton label="Dismiss message" onClick={() => setToast('')}><X size={17} /></IconButton></div>}
     {!isDesktop && <div className="preview-status"><Monitor size={14} /> Desktop preview Â· app features need the Windows app</div>}

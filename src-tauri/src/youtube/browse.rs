@@ -2,7 +2,7 @@
 use super::{
     canonical_video, channel, ensure_generation,
     gateway::YoutubeGateway,
-    identity::{playlist_target, safe_youtube_url, valid_playlist_id, valid_video_id},
+    identity::{playlist_link_id, playlist_target, valid_playlist_id, valid_video_id},
     media_item,
     metadata::text,
     normalize_video_ref,
@@ -136,6 +136,13 @@ impl YoutubeGateway {
         }
         let offset = decode_cursor(cursor, kind, query, generation)?;
         let target = browse_target(kind, query, offset + PAGE_SIZE + 1)?;
+        let is_mix = playlist_link_id(&target).is_some_and(|id| id.starts_with("RD"));
+        if is_mix && normalize_video_ref(&target).is_err() {
+            return Err(AppError::new(
+                "mix_context",
+                "This Mix is missing its starting video. Open it on YouTube and paste its watch link here.",
+            ));
+        }
         let channel_tab = channel::tab_name(kind);
         let mut extra = vec![
             "--flat-playlist".into(),
@@ -192,13 +199,14 @@ impl YoutubeGateway {
         };
         let json = match result {
             Err(error) if channel_tab.is_some() && error.code == "channel_tab_missing" => Value::Null,
-            Err(error) if target.contains("list=RD")
-                && matches!(error.code.as_str(), "extraction_failed" | "unsupported_library") => {
-                return Err(AppError::new("mix_context", "This Mix needs its original watch link. Paste a YouTube link containing both v= and list= to open it."));
-            }
+            Err(error) if is_mix && matches!(error.code.as_str(), "extraction_failed" | "unsupported_library" | "unavailable") => return Err(mix_unavailable()),
             result => result?,
         };
         let entries = json.get("entries").and_then(Value::as_array);
+        if is_mix && entries.is_none() {
+            // yt-dlp can return just the starting video when YouTube omits the Mix.
+            return Err(mix_unavailable());
+        }
         let has_more = entries.is_some_and(|e| e.len() > PAGE_SIZE)
             || (kind == "playlist"
                 && json
@@ -226,6 +234,9 @@ impl YoutubeGateway {
             media_item(&json).into_iter().filter(|item| includes_item(kind, item)).collect()
         };
         items.truncate(PAGE_SIZE);
+        if is_mix && offset == 0 && items.is_empty() {
+            return Err(mix_unavailable());
+        }
         let collection = if !json.is_null() && (kind == "playlist" || channel_tab.is_some()) {
             Some(collection_summary(&json, &target, &items))
         } else {
@@ -321,6 +332,10 @@ pub(super) fn collection_summary(json: &Value, target: &str, items: &[MediaItem]
     }
 }
 
+fn mix_unavailable() -> AppError {
+    AppError::new("mix_unavailable", "YouTube didn’t return the videos for this Mix. Try again or open another Mix.")
+}
+
 pub(super) fn browse_target(kind: &str, query: &str, search_count: usize) -> AppResult<String> {
     let query = query.trim();
     if let Some(tab) = channel::tab_name(kind) {
@@ -338,23 +353,10 @@ pub(super) fn browse_target(kind: &str, query: &str, search_count: usize) -> App
                     "Enter a search of 1–500 characters.",
                 ));
             }
-            if let Ok(parsed) = safe_youtube_url(query) {
-                if let Some(id) = parsed
-                    .query_pairs()
-                    .find(|(k, _)| k == "list")
-                    .map(|(_, v)| v.into_owned())
-                    .filter(|v| valid_playlist_id(v))
-                {
-                    return playlist_target(&id, Some(query));
-                }
+            if let Some(id) = playlist_link_id(query) {
+                return playlist_target(&id, Some(query));
             }
             if let Ok(video) = normalize_video_ref(query) {
-                if let Some(playlist) = video.playlist_id {
-                    return Ok(format!(
-                        "https://www.youtube.com/watch?v={}&list={playlist}",
-                        video.video_id
-                    ));
-                }
                 return Ok(canonical_video(&video.video_id));
             }
             if query.contains("://") || query.starts_with("www.") {
@@ -369,14 +371,9 @@ pub(super) fn browse_target(kind: &str, query: &str, search_count: usize) -> App
             let id = if valid_playlist_id(query) {
                 query.into()
             } else {
-                let url = safe_youtube_url(query)?;
-                url.query_pairs()
-                    .find(|(k, _)| k == "list")
-                    .map(|(_, v)| v.into_owned())
-                    .filter(|v| valid_playlist_id(v))
-                    .ok_or_else(|| {
-                        AppError::new("invalid_input", "Choose a valid YouTube playlist.")
-                    })?
+                playlist_link_id(query).ok_or_else(|| {
+                    AppError::new("invalid_input", "Choose a valid YouTube playlist.")
+                })?
             };
             playlist_target(&id, Some(query))
         }

@@ -1,7 +1,7 @@
 //! Convert provider metadata into the app's stable media model.
 use super::{
     canonical_video,
-    identity::{playlist_target, valid_channel_id, valid_video_id},
+    identity::{normalize_video_ref, playlist_target, valid_channel_id, valid_video_id},
 };
 use crate::models::{MediaItem, ReplayHeatSegment, Storyboard, VideoChapter};
 use serde_json::Value;
@@ -146,12 +146,21 @@ fn storyboard_format(format: &Value, duration: f64, video_id: &str) -> Option<St
 
 pub fn media_item(value: &Value) -> Option<MediaItem> {
     let id = value.get("id")?.as_str()?.to_string();
-    let source_url = value
-        .get("webpage_url")
-        .or_else(|| value.get("url"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let urls = ["webpage_url", "url", "original_url"]
+        .into_iter()
+        .filter_map(|key| value.get(key).and_then(Value::as_str));
+    let source_url = urls.clone().next().unwrap_or("");
+    let mix_watch_url = if id.starts_with("RD") {
+        urls.clone().find(|url| {
+            normalize_video_ref(url).is_ok_and(|video| {
+                video.playlist_id.as_deref() == Some(id.as_str()) && video.video_id != id
+            })
+        })
+    } else {
+        None
+    };
     let kind = if source_url.contains("/playlist?")
+        || mix_watch_url.is_some()
         || (!valid_video_id(&id) && (id.starts_with("RD") || id.starts_with("PL")))
         || matches!(id.as_str(), "WL" | "LL")
         || value.get("_type").and_then(Value::as_str) == Some("playlist")
@@ -169,7 +178,7 @@ pub fn media_item(value: &Value) -> Option<MediaItem> {
     };
     let url = match kind {
         "video" => canonical_video(&id),
-        "playlist" => playlist_target(&id, Some(source_url)).ok()?,
+        "playlist" => playlist_target(&id, mix_watch_url.or(Some(source_url))).ok()?,
         _ => format!("https://www.youtube.com/channel/{id}"),
     };
     let thumbnail = value

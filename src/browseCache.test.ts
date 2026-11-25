@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BrowseCache, browseKey } from './browseCache';
+import { BrowseCache, browseKey, mergeBrowseItems } from './browseCache';
 import type { BrowsePage, MediaItem } from './types';
 const item = (id: string): MediaItem => ({ id, kind: 'video', title: id, channel: '', thumbnail: null, url: '', duration: null, viewCount: null, description: null });
 const page = (items: MediaItem[] = [], nextCursor: string | null = null): BrowsePage => ({ items, nextCursor });
@@ -27,5 +27,10 @@ describe('session browse cache', () => {
     const cache = new BrowseCache(fetcher, vi.fn()); const key = browseKey(1, 'playlist', 'PLtest');
     await cache.ensure(key, 'playlist', 'PLtest'); await cache.loadMore(key);
     expect(cache.get(key)?.items).toHaveLength(3);
+  });
+  it('keeps distinct Mixes that share a playlist ID but start at different videos', () => {
+    const first: MediaItem = { ...item('RDMM'), kind: 'playlist', url: 'https://www.youtube.com/watch?v=fzQ6gRAEoy0&list=RDMM' };
+    const second = { ...first, url: 'https://www.youtube.com/watch?v=MuAGGZNfUkU&list=RDMM' };
+    expect(mergeBrowseItems('home', [first], [second, first])).toEqual([first, second]);
   });
 });

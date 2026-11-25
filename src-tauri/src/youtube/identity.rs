@@ -168,22 +168,29 @@ pub(super) fn playlist_target(id: &str, original: Option<&str>) -> AppResult<Str
         ));
     }
     if let Some(original) = original.filter(|v| v.contains("://")) {
-        let parsed = safe_youtube_url(original)?;
-        if let Some(seed) = parsed
-            .query_pairs()
-            .find(|(k, _)| k == "v")
-            .map(|(_, v)| v.into_owned())
-            .filter(|v| valid_video_id(v))
-        {
-            return Ok(format!("https://www.youtube.com/watch?v={seed}&list={id}"));
+        if let Ok(video) = normalize_video_ref(original) {
+            if video.playlist_id.as_deref() == Some(id) {
+                return Ok(format!("{}&list={id}", canonical_video(&video.video_id)));
+            }
+        } else {
+            safe_youtube_url(original)?;
         }
     }
-    // Standard per-video radio lists expose their seed as RD + the video ID.
-    if id.starts_with("RD") && id.len() == 13 && valid_video_id(&id[2..]) {
-        return Ok(format!(
-            "https://www.youtube.com/watch?v={}&list={id}",
-            &id[2..]
-        ));
+    // Some Mix types include the starting video ID after their prefix.
+    for prefix in ["RDMM", "RDAMVM", "RD"] {
+        if let Some(seed) = id.strip_prefix(prefix).filter(|seed| valid_video_id(seed)) {
+            return Ok(format!("{}&list={id}", canonical_video(seed)));
+        }
     }
     Ok(format!("https://www.youtube.com/playlist?list={id}"))
+}
+
+pub(super) fn playlist_link_id(input: &str) -> Option<String> {
+    if let Ok(video) = normalize_video_ref(input) {
+        return video.playlist_id;
+    }
+    let url = safe_youtube_url(input).ok()?;
+    url.query_pairs()
+        .find(|(key, value)| key == "list" && valid_playlist_id(value))
+        .map(|(_, id)| id.into_owned())
 }

@@ -14,9 +14,8 @@
 @media (prefers-reduced-motion: reduce) { .comment-sort-trigger, .comment-sort-trigger svg:last-child, .comment-sort-menu > button { transition: none; } }
 
 .comment-collapsed:focus-within { -webkit-line-clamp: initial; }
-.comment-timestamp, .comment-translate { color: var(--blue); background: transparent; }
-.comment-timestamp { display: inline; padding: 0; font: inherit; font-weight: 600; }
-.comment-timestamp:hover, .comment-translate:hover:not(:disabled) { text-decoration: underline; }
+.comment-translate { color: var(--blue); background: transparent; }
+.comment-translate:hover:not(:disabled) { text-decoration: underline; }
 .comment-text-actions { display: flex; align-items: center; flex-wrap: wrap; column-gap: 15px; }
 .comment-text-actions > .comment-expand { padding: 0; }
 .comment-translate { display: inline-flex; align-items: center; gap: 6px; padding: 0; min-height: 27px; font-size: 12px; font-weight: 500; }

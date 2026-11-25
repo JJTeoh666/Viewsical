@@ -6,6 +6,7 @@ import { ChannelSubscribe } from './ChannelSubscribe';
 import { errorMessage, views } from './format';
 import { SaveVideoDialog } from './SaveVideoDialog';
 import { ShareVideoDialog } from './ShareVideoDialog';
+import { TimestampText } from './TimestampText';
 import type { MediaItem, SessionSnapshot, VideoRating, WatchDetails } from './types';
 import './watch-actions.css';
 
@@ -71,10 +72,12 @@ function WatchActionMenu({ onSave, onDownload }: { onSave: () => void; onDownloa
   </div>;
 }
 
-function VideoDescription({ description, count, date }: {
+function VideoDescription({ description, count, date, duration, onSeek }: {
   description: string | null;
   count: number | null;
   date: string | null | undefined;
+  duration: number;
+  onSeek: (seconds: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const bodyId = useId();
@@ -86,7 +89,7 @@ function VideoDescription({ description, count, date }: {
   const excerpt = characters.slice(0, 140).join('').trimEnd();
   const lastSpace = excerpt.lastIndexOf(' ');
   const endsMidWord = shortened && characters[139] !== ' ' && characters[140] !== ' ' && lastSpace > 105;
-  const preview = shortened ? `${endsMidWord ? excerpt.slice(0, lastSpace) : excerpt}…` : compact;
+  const previewLength = shortened ? (endsMidWord ? lastSpace : excerpt.length) : compact.length;
   const upload = date ? new Date(`${date}T00:00:00Z`) : null;
   const formatted = upload && Number.isFinite(upload.getTime())
     ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(upload)
@@ -99,17 +102,20 @@ function VideoDescription({ description, count, date }: {
       {viewLabel && <span title={count == null ? undefined : `${count.toLocaleString()} ${count === 1 ? 'view' : 'views'}`}>{viewLabel}</span>}
       {formatted && date && <time dateTime={date}>{formatted}</time>}
     </div>}
-    {text && <p id={bodyId}>{expanded ? text : preview}</p>}
+    {text && <p id={bodyId}><TimestampText text={expanded ? text : compact} duration={duration} onSeek={onSeek}
+      visibleLength={expanded ? undefined : previewLength} />{!expanded && shortened && '…'}</p>}
     {canExpand && <button type="button" className="description-toggle" aria-expanded={expanded} aria-controls={bodyId}
       onClick={() => setExpanded(value => !value)}>{expanded ? 'Show less' : 'Show more'}</button>}
   </section>;
 }
 
-export function WatchInfo({ video, session, position, resolving, onOpenChannel, onSubscriptionChange, onSignIn, onSaved, onDownload }: {
+export function WatchInfo({ video, session, position, resolving, duration, onSeek, onOpenChannel, onSubscriptionChange, onSignIn, onSaved, onDownload }: {
   video: MediaItem;
   session: SessionSnapshot;
   position: number;
   resolving: boolean;
+  duration: number;
+  onSeek: (seconds: number) => void;
   onOpenChannel: OpenVideoChannel;
   onSubscriptionChange: () => void;
   onSignIn: () => void;
@@ -234,7 +240,8 @@ export function WatchInfo({ video, session, position, resolving, onOpenChannel, 
       </div>
     </div>
     {ratingError && <p className="watch-rating-error" role="alert">{ratingError}</p>}
-    <VideoDescription description={details?.description ?? video.description} count={details?.viewCount ?? video.viewCount} date={details?.uploadDate} />
+    <VideoDescription description={details?.description ?? video.description} count={details?.viewCount ?? video.viewCount}
+      date={details?.uploadDate} duration={duration} onSeek={onSeek} />
     {sharePosition !== null && <ShareVideoDialog videoId={video.id} position={sharePosition} onClose={() => setSharePosition(null)} />}
     {saveOpen && <SaveVideoDialog video={video} session={session} onClose={() => setSaveOpen(false)}
       onSaved={(title, youtube) => { setSaveOpen(false); onSaved(title, youtube); }} />}

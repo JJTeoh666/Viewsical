@@ -1,5 +1,16 @@
 # Changelog
 
+## Viewsical 0.1.21 — 24 November 2026
+
+- Make timestamps in video descriptions clickable so they jump to the current video at that time.
+- Include the YouTube Mix playback and error text fixes listed in v0.1.20.
+
+## Viewsical 0.1.20 — 22 November 2026
+
+- Preserve the starting video when opening YouTube Mix cards and rebuild supported Mix links from their playlist IDs.
+- Retry when YouTube returns only the starting video, and explain when a Mix needs its full watch link.
+- Fix garbled punctuation in browse, startup, sign-in, and queue messages.
+
 ## Viewsical 0.1.19 — 21 November 2026
 
 - Open each downloaded file in its actual folder and select it in File Explorer.

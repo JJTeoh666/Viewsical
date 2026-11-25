@@ -3,8 +3,8 @@ import type { KeyboardEvent } from 'react';
 import { AlertCircle, Check, ChevronDown, Clock3, Languages, ListFilter, LoaderCircle, MessageSquare, MessageSquareOff, Pin, RefreshCw, ThumbsUp } from 'lucide-react';
 import { api, isDesktop } from './api';
 import { COMMENT_LIMIT, CommentCache, commentKey } from './commentCache';
-import { commentTimestamps } from './commentTimestamps';
 import { errorMessage } from './format';
+import { TimestampText } from './TimestampText';
 import { IconButton } from './ui';
 import type { CommentPage, CommentSort, VideoComment } from './types';
 import './comments-sort.css';
@@ -53,17 +53,6 @@ function CommentSortMenu({ sort, disabled, onSort }: { sort: CommentSort; disabl
 type CommentTranslation = { source: string } & (
   { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; text: string; show: boolean }
 );
-
-function CommentText({ text, duration, onSeek }: { text: string; duration: number; onSeek: (seconds: number) => void }) {
-  const timestamps = commentTimestamps(text, duration);
-  let start = 0;
-  const content = timestamps.map(({ index, label, seconds }) => {
-    const precedingText = text.slice(start, index);
-    start = index + label.length;
-    return <span key={index}>{precedingText}<button type="button" className="comment-timestamp" dir="ltr" aria-label={`Jump to ${label}`} onClick={() => onSeek(seconds)}>{label}</button></span>;
-  });
-  return <>{content}{text.slice(start)}</>;
-}
 
 type CommentRowContext = {
   generation: number; duration: number; onSeek: (seconds: number) => void;
@@ -181,7 +170,7 @@ function CommentRow({ comment, replyScope, ...context }: CommentRowContext & {
     <div className="comment-body">{comment.isPinned && <div className="comment-pinned"><Pin size={12} />Pinned</div>}<div className="comment-author">
       {openProfile ? <button type="button" className="comment-author-link" onClick={openProfile}>{author}</button> : <strong>{author}</strong>}
       {comment.authorIsUploader && <span className="comment-creator">Creator</span>}{comment.published && <time>{comment.published}</time>}</div>
-      <p className={`comment-text ${long && !expanded ? 'comment-collapsed' : ''}`} dir="auto" lang={showTranslation ? 'en' : undefined}><CommentText text={text} duration={duration} onSeek={onSeek} /></p>
+      <p className={`comment-text ${long && !expanded ? 'comment-collapsed' : ''}`} dir="auto" lang={showTranslation ? 'en' : undefined}><TimestampText text={text} duration={duration} onSeek={onSeek} /></p>
       <div className="comment-text-actions">
         {long && <button type="button" className="comment-expand" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? 'Show less' : 'Read more'}</button>}
         {result?.status === 'ready' && !translated

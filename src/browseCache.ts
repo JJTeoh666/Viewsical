@@ -11,8 +11,11 @@ type Fetcher = (kind: BrowseKind, query: string, cursor: string | null, requestI
 interface RecordEntry { entry: BrowseEntry; pages: Map<string, BrowsePage>; jobs: Map<string, { id: string; promise: Promise<BrowsePage> }>; revision: number }
 
 export function browseKey(generation: number, kind: string, query = ''): string { return JSON.stringify([generation, kind, query.trim()]); }
+export function browseItemKey(item: MediaItem): string {
+  return item.kind === 'playlist' && item.id.startsWith('RD') ? item.url || item.id : item.id;
+}
 export function mergeBrowseItems(kind: BrowseKind, previous: MediaItem[], next: MediaItem[]): MediaItem[] {
-  return kind === 'playlist' ? [...previous, ...next] : uniqueItems([...previous, ...next]);
+  return kind === 'playlist' ? [...previous, ...next] : uniqueItems([...previous, ...next], browseItemKey);
 }
 
 /** Session-only metadata cache. No timers or navigation-based invalidation. */

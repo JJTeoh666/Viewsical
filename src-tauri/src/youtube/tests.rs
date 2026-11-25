@@ -233,6 +233,36 @@ fn preserves_mix_seed_and_discards_tracking() {
     )
     .is_err());
 }
+
+#[test]
+fn reconstructs_seeded_mix_links_from_browse_cards_and_pasted_urls() {
+    for id in ["RDfzQ6gRAEoy0", "RDMMfzQ6gRAEoy0", "RDAMVMfzQ6gRAEoy0"] {
+        let playlist_url = format!("https://www.youtube.com/playlist?list={id}");
+        let expected = format!("https://www.youtube.com/watch?v=fzQ6gRAEoy0&list={id}");
+        let item = media_item(&json!({"id":id,"title":"Mix","url":playlist_url})).unwrap();
+        assert_eq!(item.url, expected);
+        assert_eq!(browse_target("playlist", &playlist_url, 25).unwrap(), expected);
+    }
+    let expected = "https://www.youtube.com/watch?v=fzQ6gRAEoy0&list=RDMM";
+    let item = media_item(&json!({
+        "id":"RDMM","title":"Mix",
+        "webpage_url":"https://www.youtube.com/playlist?list=RDMM",
+        "url":"https://www.youtube.com/watch?v=fzQ6gRAEoy0&list=RDMM",
+    })).unwrap();
+    assert_eq!(item.url, expected);
+    assert_eq!(
+        browse_target("playlist", "https://youtu.be/fzQ6gRAEoy0?list=RDMM&si=tracking", 25).unwrap(),
+        expected
+    );
+    assert_eq!(
+        playlist_target("RDMM", Some("https://www.youtube.com/watch?v=fzQ6gRAEoy0&list=RDother")).unwrap(),
+        "https://www.youtube.com/playlist?list=RDMM"
+    );
+    assert_eq!(
+        browse_target("playlist", "RDCLAK5uy_Fixture_Without_Seed", 25).unwrap(),
+        "https://www.youtube.com/playlist?list=RDCLAK5uy_Fixture_Without_Seed"
+    );
+}
 #[test]
 fn source_cache_requires_all_expiries_and_skew() {
     assert_eq!(
